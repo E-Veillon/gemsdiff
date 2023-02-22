@@ -1,0 +1,8 @@
+.vscode
+__pycache__
+data
+*.png
+*.csv
+*.svg
+*.json
+gemnet_
