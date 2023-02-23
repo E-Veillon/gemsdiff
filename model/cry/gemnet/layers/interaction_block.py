@@ -150,7 +150,6 @@ class InteractionBlockTripletsOnly(torch.nn.Module):
         m,
         rbf3,
         cbf3,
-        id3_ragged_idx,
         id_swap,
         id3_ba,
         id3_ca,
@@ -174,7 +173,6 @@ class InteractionBlockTripletsOnly(torch.nn.Module):
             m,
             rbf3,
             cbf3,
-            id3_ragged_idx,
             id_swap,
             id3_ba,
             id3_ca,
@@ -307,7 +305,6 @@ class TripletInteraction(torch.nn.Module):
         m,
         rbf3,
         cbf3,
-        id3_ragged_idx,
         id_swap,
         id3_ba,
         id3_ca,
@@ -334,7 +331,7 @@ class TripletInteraction(torch.nn.Module):
         x_ba = x_ba[id3_ba]
 
         # Efficient bilinear layer
-        x = self.mlp_cbf(cbf3, x_ba, id3_ca, id3_ragged_idx)
+        x = self.mlp_cbf(cbf3, x_ba, id3_ca)
         # (nEdges, emb_size_quad)
         # x = self.scale_cbf_sum(x_ba, x)
 

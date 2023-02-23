@@ -9,6 +9,8 @@ import torch
 
 from ..initializers import he_orthogonal_init
 
+from torch_scatter import scatter_add
+
 
 class EfficientInteractionDownProjection(torch.nn.Module):
     """
@@ -38,14 +40,12 @@ class EfficientInteractionDownProjection(torch.nn.Module):
 
     def reset_parameters(self):
         self.weight = torch.nn.Parameter(
-            torch.empty(
-                (self.num_spherical, self.num_radial, self.emb_size_interm)
-            ),
+            torch.empty((self.num_spherical, self.num_radial, self.emb_size_interm)),
             requires_grad=True,
         )
         he_orthogonal_init(self.weight)
 
-    def forward(self, rbf, sph, id_ca, id_ragged_idx):
+    def forward(self, rbf, sph):
         """
 
         Arguments
@@ -61,7 +61,6 @@ class EfficientInteractionDownProjection(torch.nn.Module):
         sph: torch.Tensor, shape=(nEdges, Kmax, num_spherical)
             Kmax = maximum number of neighbors of the edges
         """
-        num_edges = rbf.shape[1]
 
         # MatMul: mul + sum over num_radial
         rbf_W1 = torch.matmul(rbf, self.weight)
@@ -69,6 +68,8 @@ class EfficientInteractionDownProjection(torch.nn.Module):
         rbf_W1 = rbf_W1.permute(1, 2, 0)
         # (nEdges, emb_size_interm, num_spherical)
 
+        """
+        num_edges = rbf.shape[1]
         # Zero padded dense matrix
         # maximum number of neighbors, catch empty id_ca with maximum
         if sph.shape[0] == 0:
@@ -84,8 +85,9 @@ class EfficientInteractionDownProjection(torch.nn.Module):
 
         sph2 = torch.transpose(sph2, 1, 2)
         # (nEdges, num_spherical/emb_size_interm, Kmax)
+        """
 
-        return rbf_W1, sph2
+        return rbf_W1, sph
 
 
 class EfficientInteractionBilinear(torch.nn.Module):
@@ -126,8 +128,7 @@ class EfficientInteractionBilinear(torch.nn.Module):
         self,
         basis,
         m,
-        id_reduce,
-        id_ragged_idx,
+        id_reduce
     ):
         """
 
@@ -146,8 +147,9 @@ class EfficientInteractionBilinear(torch.nn.Module):
         # num_spherical is actually num_spherical**2 for quadruplets
         (rbf_W1, sph) = basis
         # (nEdges, emb_size_interm, num_spherical), (nEdges, num_spherical, Kmax)
-        nEdges = rbf_W1.shape[0]
 
+        """
+        nEdges = rbf_W1.shape[0]
         # Create (zero-padded) dense matrix of the neighboring edge embeddings.
         Kmax = torch.max(
             torch.max(id_ragged_idx) + 1,
@@ -158,7 +160,14 @@ class EfficientInteractionBilinear(torch.nn.Module):
         m2[id_reduce, id_ragged_idx] = m
         # (num_quadruplets or num_triplets, emb_size) -> (nEdges, Kmax, emb_size)
 
-        sum_k = torch.matmul(sph, m2)  # (nEdges, num_spherical, emb_size)
+        sum_k2 = torch.matmul(sph2, m2)  # (nEdges, num_spherical, emb_size)
+        """
+
+        sum_k = scatter_add(
+            sph[:, :, None] * m[:, None, :], id_reduce, dim=0, dim_size=rbf_W1.shape[0]
+        )
+
+        # print((sum_k2 - sum_k).abs().max().item())
 
         # MatMul: mul + sum over num_spherical
         rbf_W1_sum_k = torch.matmul(rbf_W1, sum_k)

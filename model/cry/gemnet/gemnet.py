@@ -10,7 +10,7 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn as nn
-from torch_scatter import scatter
+from torch_scatter import scatter, scatter_add
 from torch_sparse import SparseTensor
 
 from .data_utils import get_pbc_distances, radius_graph_pbc
@@ -31,6 +31,9 @@ from .utils import (
     repeat_blocks,
 )
 from .layers.grad.vector_fields import make_vector_fields
+
+from utils.geometry import Geometry
+from crystallographic_graph import sparse_meshgrid
 
 
 class GemNetT(torch.nn.Module):
@@ -118,7 +121,7 @@ class GemNetT(torch.nn.Module):
             "type": "grad",
             "edges": [],
             "triplets": ["n_ij", "n_ik", "angle"],
-            "normalize": False,
+            "normalize": True,
         },
         output_init: str = "HeOrthogonal",
         activation: str = "swish",
@@ -251,233 +254,6 @@ class GemNetT(torch.nn.Module):
             (self.mlp_rbf_out, self.num_blocks + 1),
         ]
 
-    def get_triplets(self, edge_index, num_atoms):
-        """
-        Get all b->a for each edge c->a.
-        It is possible that b=c, as long as the edges are distinct.
-
-        Returns
-        -------
-        id3_ba: torch.Tensor, shape (num_triplets,)
-            Indices of input edge b->a of each triplet b->a<-c
-        id3_ca: torch.Tensor, shape (num_triplets,)
-            Indices of output edge c->a of each triplet b->a<-c
-        id3_ragged_idx: torch.Tensor, shape (num_triplets,)
-            Indices enumerating the copies of id3_ca for creating a padded matrix
-        """
-        idx_s, idx_t = edge_index  # c->a (source=c, target=a)
-
-        value = torch.arange(idx_s.size(0), device=idx_s.device, dtype=idx_s.dtype)
-        # Possibly contains multiple copies of the same edge (for periodic interactions)
-        adj = SparseTensor(
-            row=idx_t,
-            col=idx_s,
-            value=value,
-            sparse_sizes=(num_atoms, num_atoms),
-        )
-        adj_edges = adj[idx_t]
-
-        # Edge indices (b->a, c->a) for triplets.
-        id3_ba = adj_edges.storage.value()
-        id3_ca = adj_edges.storage.row()
-
-        # Remove self-loop triplets
-        # Compare edge indices, not atom indices to correctly handle periodic interactions
-        mask = id3_ba != id3_ca
-        id3_ba = id3_ba[mask]
-        id3_ca = id3_ca[mask]
-
-        # Get indices to reshape the neighbor indices b->a into a dense matrix.
-        # id3_ca has to be sorted for this to work.
-        num_triplets = torch.bincount(id3_ca, minlength=idx_s.size(0))
-        id3_ragged_idx = ragged_range(num_triplets)
-
-        return id3_ba, id3_ca, id3_ragged_idx
-
-    def select_symmetric_edges(self, tensor, mask, reorder_idx, inverse_neg):
-        # Mask out counter-edges
-        tensor_directed = tensor[mask]
-        # Concatenate counter-edges after normal edges
-        sign = 1 - 2 * inverse_neg
-        tensor_cat = torch.cat([tensor_directed, sign * tensor_directed])
-        # Reorder everything so the edges of every image are consecutive
-        tensor_ordered = tensor_cat[reorder_idx]
-        return tensor_ordered
-
-    def reorder_symmetric_edges(
-        self, edge_index, cell_offsets, neighbors, edge_dist, edge_vector
-    ):
-        """
-        Reorder edges to make finding counter-directional edges easier.
-
-        Some edges are only present in one direction in the data,
-        since every atom has a maximum number of neighbors. Since we only use i->j
-        edges here, we lose some j->i edges and add others by
-        making it symmetric.
-        We could fix this by merging edge_index with its counter-edges,
-        including the cell_offsets, and then running torch.unique.
-        But this does not seem worth it.
-        """
-
-        # Generate mask
-        mask_sep_atoms = edge_index[0] < edge_index[1]
-        # Distinguish edges between the same (periodic) atom by ordering the cells
-        cell_earlier = (
-            (cell_offsets[:, 0] < 0)
-            | ((cell_offsets[:, 0] == 0) & (cell_offsets[:, 1] < 0))
-            | (
-                (cell_offsets[:, 0] == 0)
-                & (cell_offsets[:, 1] == 0)
-                & (cell_offsets[:, 2] < 0)
-            )
-        )
-        mask_same_atoms = edge_index[0] == edge_index[1]
-        mask_same_atoms &= cell_earlier
-        mask = mask_sep_atoms | mask_same_atoms
-
-        # Mask out counter-edges
-        edge_index_new = edge_index[mask[None, :].expand(2, -1)].view(2, -1)
-
-        # Concatenate counter-edges after normal edges
-        edge_index_cat = torch.cat(
-            [
-                edge_index_new,
-                torch.stack([edge_index_new[1], edge_index_new[0]], dim=0),
-            ],
-            dim=1,
-        )
-
-        # Count remaining edges per image
-        batch_edge = torch.repeat_interleave(
-            torch.arange(neighbors.size(0), device=edge_index.device),
-            neighbors,
-        )
-        batch_edge = batch_edge[mask]
-        neighbors_new = 2 * torch.bincount(batch_edge, minlength=neighbors.size(0))
-
-        # Create indexing array
-        edge_reorder_idx = repeat_blocks(
-            neighbors_new // 2,
-            repeats=2,
-            continuous_indexing=True,
-            repeat_inc=edge_index_new.size(1),
-        )
-
-        # Reorder everything so the edges of every image are consecutive
-        edge_index_new = edge_index_cat[:, edge_reorder_idx]
-        cell_offsets_new = self.select_symmetric_edges(
-            cell_offsets, mask, edge_reorder_idx, True
-        )
-        edge_dist_new = self.select_symmetric_edges(
-            edge_dist, mask, edge_reorder_idx, False
-        )
-        edge_vector_new = self.select_symmetric_edges(
-            edge_vector, mask, edge_reorder_idx, True
-        )
-
-        return (
-            edge_index_new,
-            cell_offsets_new,
-            neighbors_new,
-            edge_dist_new,
-            edge_vector_new,
-        )
-
-    def select_edges(
-        self,
-        edge_index,
-        cell_offsets,
-        neighbors,
-        edge_dist,
-        edge_vector,
-        cutoff=None,
-    ):
-        if cutoff is not None:
-            edge_mask = edge_dist <= cutoff
-
-            edge_index = edge_index[:, edge_mask]
-            cell_offsets = cell_offsets[edge_mask]
-            neighbors = mask_neighbors(neighbors, edge_mask)
-            edge_dist = edge_dist[edge_mask]
-            edge_vector = edge_vector[edge_mask]
-
-        empty_image = neighbors == 0
-        if torch.any(empty_image):
-            import pdb
-
-            pdb.set_trace()
-            # raise ValueError(
-            #     f"An image has no neighbors: id={data.id[empty_image]}, "
-            #     f"sid={data.sid[empty_image]}, fid={data.fid[empty_image]}"
-            # )
-        return edge_index, cell_offsets, neighbors, edge_dist, edge_vector
-
-    def generate_interaction_graph(self, cart_coords, lattice, num_atoms):
-        edge_index, to_jimages, num_bonds = radius_graph_pbc(
-            cart_coords,
-            lattice,
-            num_atoms,
-            self.cutoff,
-            self.max_neighbors,
-            device=num_atoms.device,
-        )
-
-        # Switch the indices, so the second one becomes the target index,
-        # over which we can efficiently aggregate.
-        out = get_pbc_distances(
-            cart_coords,
-            edge_index,
-            lattice,
-            to_jimages,
-            num_atoms,
-            num_bonds,
-            return_offsets=True,
-            return_distance_vec=True,
-        )
-
-        edge_index = out["edge_index"]
-        D_st = out["distances"]
-        # These vectors actually point in the opposite direction.
-        # But we want to use col as idx_t for efficient aggregation.
-        V_st = -out["distance_vec"] / D_st[:, None]
-        # offsets_ca = -out["offsets"]  # a - c + offset
-
-        (
-            edge_index,
-            cell_offsets,
-            neighbors,
-            D_st,
-            V_st,
-        ) = self.reorder_symmetric_edges(edge_index, to_jimages, num_bonds, D_st, V_st)
-
-        # Indices for swapping c->a and a->c (for symmetric MP)
-        block_sizes = neighbors // 2
-        id_swap = repeat_blocks(
-            block_sizes,
-            repeats=2,
-            continuous_indexing=False,
-            start_idx=block_sizes[0],
-            block_inc=block_sizes[:-1] + block_sizes[1:],
-            repeat_inc=-block_sizes,
-        )
-
-        id3_ba, id3_ca, id3_ragged_idx = self.get_triplets(
-            edge_index,
-            num_atoms=num_atoms.sum(),
-        )
-
-        return (
-            edge_index,
-            neighbors,
-            D_st,
-            V_st,
-            cell_offsets,
-            id_swap,
-            id3_ba,
-            id3_ca,
-            id3_ragged_idx,
-        )
-
     def forward(
         self,
         cell: torch.FloatTensor,
@@ -497,24 +273,32 @@ class GemNetT(torch.nn.Module):
             atom_frac_coords: (N_atoms, 3)
             atom_types: (N_atoms, MAX_ATOMIC_NUM)
         """
-        batch = torch.arange(
-            cell.shape[0], dtype=torch.long, device=cell.device
-        ).repeat_interleave(num_atoms)
 
-        pos = torch.bmm(cell[batch], x.unsqueeze(2)).squeeze(2)
+        geometry = Geometry(
+            cell,
+            num_atoms,
+            x,
+            knn=32,
+            triplets=False,
+            symetric=True,
+            compute_reverse_idx=True,
+        )
 
-        (
-            edge_index,
-            neighbors,
-            D_st,
-            V_st,
-            offset,
-            id_swap,
-            id3_ba,
-            id3_ca,
-            id3_ragged_idx,
-        ) = self.generate_interaction_graph(pos, cell, num_atoms)
-        idx_s, idx_t = edge_index
+        batch = geometry.batch
+        idx_s = geometry.edges.src
+        idx_t = geometry.edges.dst
+        D_st = geometry.edges_r_ij
+        V_st = -geometry.edges_v_ij / geometry.edges_r_ij[:, None]
+        id_swap = geometry.edges.reverse_idx
+
+        num_edges = scatter_add(
+            torch.ones_like(idx_s), idx_s, dim=0, dim_size=x.shape[0]
+        )
+        i_triplets, j_triplets = sparse_meshgrid(num_edges)
+
+        mask = i_triplets != j_triplets
+        id3_ba = i_triplets[mask]
+        id3_ca = j_triplets[mask]
 
         # Calculate triplet angles
         cosφ_cab = inner_product_normalized(V_st[id3_ca], V_st[id3_ba])
@@ -530,7 +314,7 @@ class GemNetT(torch.nn.Module):
         m = self.edge_emb(h, rbf, idx_s, idx_t)  # (nEdges, emb_size_edge)
 
         rbf3 = self.mlp_rbf3(rbf)
-        cbf3 = self.mlp_cbf3(rad_cbf3, sbf3, id3_ca, id3_ragged_idx)
+        cbf3 = self.mlp_cbf3(rad_cbf3, sbf3)
 
         rbf_h = self.mlp_rbf_h(rbf)
         rbf_out = self.mlp_rbf_out(rbf)
@@ -548,7 +332,6 @@ class GemNetT(torch.nn.Module):
                 m=m,
                 rbf3=rbf3,
                 cbf3=cbf3,
-                id3_ragged_idx=id3_ragged_idx,
                 id_swap=id_swap,
                 id3_ba=id3_ba,
                 id3_ca=id3_ca,
@@ -587,11 +370,15 @@ class GemNetT(torch.nn.Module):
         )  # (nAtoms, num_targets, 3)
         F_t = F_t.squeeze(1)  # (nAtoms, 3)
 
+        F_t_in = torch.bmm(cell.inverse()[batch].detach(), F_t.unsqueeze(2)).squeeze(2)
+
         # ========================== STRESS ==========================
         batch_triplets = batch[idx_s[id3_ba]]
 
-        e_ij = x[idx_s[id3_ba]] - x[idx_t[id3_ba]] + offset[id3_ba]
-        e_ik = x[idx_s[id3_ca]] - x[idx_t[id3_ca]] + offset[id3_ca]
+        # e_ij = x[idx_s[id3_ba]] - x[idx_t[id3_ba]] + offset[id3_ba]
+        # e_ik = x[idx_s[id3_ca]] - x[idx_t[id3_ca]] + offset[id3_ca]
+        e_ij = geometry.edges_e_ij[id3_ba]
+        e_ik = geometry.edges_e_ij[id3_ca]
 
         """
         v_ij = torch.bmm(cell[batch_triplets], -e_ij.unsqueeze(2)).squeeze(2)
@@ -620,7 +407,7 @@ class GemNetT(torch.nn.Module):
         cell_prime = torch.bmm(S_t, cell)
 
         return (
-            (x + F_t) % 1.0,
+            (x + F_t_in) % 1.0,
             F_t,
             h,
             cell_prime,

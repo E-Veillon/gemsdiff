@@ -287,8 +287,8 @@ class Denoiser(nn.Module):
         # mask = self.is_in(geometry.edges, close_geometry.edges).unsqueeze(1)
         # geometry.filter_edges(mask)
 
-        x_prime, _, _, rho_prime, _ = self.gemnet(cell, x_thild, z, num_atoms)
-        return x_prime, rho_prime
+        _, x_traj, _, rho_prime, _ = self.gemnet(cell, x_thild, z, num_atoms)
+        return x_traj, rho_prime
 
         geometry = Geometry(cell, num_atoms, x_thild, knn=self.knn, triplets=False)
 

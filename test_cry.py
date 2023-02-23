@@ -18,21 +18,22 @@ from model.cry.attention import Denoiser
 from loss.min_distance_loss import MinDistanceLoss
 from loss.periodic_relative_loss import PeriodicRelativeLoss
 from loss.relative_loss import RelativeLoss
+from loss.optimal_traj import OptimalTrajLoss
 from loss.lattice_loss import LossLatticeParameters
 from utils.scaler import LatticeScaler
 
 device = "cuda"
 batch_size = 128
 
-#dataset = MaterialsProject("./data/mp", pre_filter=lambda x: x.num_atoms <= 32)
-dataset = MP20("./data/mp-20","train")
+# dataset = MaterialsProject("./data/mp", pre_filter=lambda x: x.num_atoms <= 32)
+dataset = MP20("./data/mp-20", "train")
 loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 scaler = LatticeScaler().to(device)
 scaler.fit(loader)
 
 model = Denoiser(256, 8, 4, hidden_dim=128).to(device)
-loss_pos_fn = MinDistanceLoss(center=True).to(device)
+loss_pos_fn = OptimalTrajLoss(center=True, euclidian=True).to(device)
 loss_lattice_fn = LossLatticeParameters(lattice_scaler=scaler).to(device)
 
 opt = optim.Adam(model.parameters(), lr=1e-3)
@@ -184,7 +185,7 @@ for epoch in tqdm.tqdm(range(256), leave=True, position=0):
             torch.matrix_exp(0.3 * torch.randn_like(batch.cell)), batch.cell
         )
 
-        x_prime, rho_prime = model.forward(
+        x_traj, rho_prime = model.forward(
             rho_thild, batch.pos, x_thild, batch.z, batch.num_atoms
         )
 
@@ -192,10 +193,13 @@ for epoch in tqdm.tqdm(range(256), leave=True, position=0):
         #    mu, sigma = mask.float().mean(), mask.float().std()
 
         # loss = F.mse_loss(pred_edges, (mask.float() - mu) / sigma)
-        loss_pos = 10*loss_pos_fn(batch.cell, batch.pos, x_prime, batch.num_atoms)
+        loss_pos = loss_pos_fn(batch.cell, batch.pos, x_thild, x_traj, batch.num_atoms)
         loss_lat = loss_lattice_fn(rho_prime, batch.cell)
         loss = loss_pos + loss_lat
         loss.backward()
+
+        # loss_pos ~ 0.52
+        # loss_lat ~ 0.82
 
         # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 

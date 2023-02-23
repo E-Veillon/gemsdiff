@@ -56,6 +56,8 @@ class Geometry:
         check_tensor: bool = True,
         edges: bool = True,
         triplets: bool = True,
+        symetric: bool = False,
+        compute_reverse_idx: bool = False,
         edges_idx: torch.LongTensor = None,
         edges_attr: torch.LongTensor = None,
     ):
@@ -96,7 +98,13 @@ class Geometry:
         if edges:
             if edges_idx is None:
                 self.edges = crystallographic_graph.make_graph(
-                    self.cell, self.x, self.num_atoms, knn=knn, cutoff=cutoff
+                    self.cell,
+                    self.x,
+                    self.num_atoms,
+                    knn=knn,
+                    cutoff=cutoff,
+                    symetric=symetric,
+                    compute_reverse_idx=compute_reverse_idx,
                 )
 
                 self.batch_edges = self.batch[self.edges.src]
