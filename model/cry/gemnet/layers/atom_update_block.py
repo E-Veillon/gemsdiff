@@ -12,7 +12,6 @@ from ..initializers import he_orthogonal_init
 from .base_layers import Dense, ResidualLayer
 from .scaling import ScalingFactor
 
-
 class AtomUpdateBlock(torch.nn.Module):
     """
     Aggregate the message embeddings of the atoms
@@ -112,11 +111,15 @@ class OutputBlock(AtomUpdateBlock):
         self,
         emb_size_atom: int,
         emb_size_edge: int,
+        emb_size_trip: int,
         emb_size_rbf: int,
+        emb_size_cbf: int,
         nHidden: int,
         num_targets: int,
+        num_vector_fields: int,
         activation=None,
         direct_forces=True,
+        stress=True,
         output_init="HeOrthogonal",
         scale_file=None,
         name: str = "output",
@@ -137,12 +140,12 @@ class OutputBlock(AtomUpdateBlock):
         assert isinstance(output_init, str)
         self.output_init = output_init.lower()
         self.direct_forces = direct_forces
+        self.stress = stress
 
         self.seq_energy = self.layers  # inherited from parent class
         self.out_energy = Dense(emb_size_atom, num_targets, bias=False, activation=None)
 
         if self.direct_forces:
-            # self.scale_rbf_F = ScalingFactor(scale_file=scale_file, name=name + "_had")
             self.seq_forces = self.get_mlp(
                 emb_size_edge, emb_size_edge, nHidden, activation
             )
@@ -151,6 +154,20 @@ class OutputBlock(AtomUpdateBlock):
             )
             self.dense_rbf_F = Dense(
                 emb_size_rbf, emb_size_edge, activation=None, bias=False
+            )
+
+        if self.stress:
+            self.seq_stress = self.get_mlp(
+                emb_size_edge * 2, emb_size_trip, nHidden, activation
+            )
+            self.out_stress = Dense(
+                emb_size_trip, num_vector_fields, bias=False, activation=None
+            )
+            self.dense_rbf_S = Dense(
+                emb_size_rbf, emb_size_trip, activation=None, bias=False
+            )
+            self.dense_cbf_S = Dense(
+                emb_size_cbf, emb_size_trip, activation=None, bias=False
             )
 
         self.reset_parameters()
@@ -167,13 +184,14 @@ class OutputBlock(AtomUpdateBlock):
         else:
             raise UserWarning(f"Unknown output_init: {self.output_init}")
 
-    def forward(self, h, m, rbf, id_j):
+    def forward(self, h, m, rbf, cbf, id_j, id3_i, id3_j):
         """
         Returns
         -------
-            (E, F): tuple
+            (E, F, S): tuple
             - E: torch.Tensor, shape=(nAtoms, num_targets)
             - F: torch.Tensor, shape=(nEdges, num_targets)
+            - S: torch.Tensor, shape=(nTriplets, num_vector_fields)
             Energy and force prediction
         """
         nAtoms = h.shape[0]
@@ -205,6 +223,20 @@ class OutputBlock(AtomUpdateBlock):
             x_F = self.out_forces(x_F)  # (nEdges, num_targets)
         else:
             x_F = 0
+
+        # --------------------------------------- Stress Prediction -------------------------------------- #
+        if self.stress:
+            x_S = torch.cat((m[id3_i], m[id3_j]), dim=1)
+            for i, layer in enumerate(self.seq_stress):
+                x_S = layer(x_S)  # (nTriplets, emb_size_trip)
+
+            rbf_emb_S = self.dense_rbf_S(rbf)  # (nTriplets, emb_size_trip)
+            cbf_emb_S = self.dense_cbf_S(cbf)  # (nTriplets, emb_size_trip)
+            x_S = x_S * rbf_emb_S[id3_i] * cbf_emb_S
+
+            x_S = self.out_stress(x_S)  # (nEdges, num_vector_fields)
+        else:
+            x_S = 0
         # ----------------------------------------------------------------------------------------------- #
 
-        return x_E, x_F
+        return x_E, x_F, x_S

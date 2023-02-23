@@ -30,6 +30,7 @@ from .utils import (
     ragged_range,
     repeat_blocks,
 )
+from .layers.grad.vector_fields import make_vector_fields
 
 
 class GemNetT(torch.nn.Module):
@@ -100,7 +101,7 @@ class GemNetT(torch.nn.Module):
         num_blocks: int = 3,
         emb_size_atom: int = 128,
         emb_size_edge: int = 128,
-        emb_size_trip: int = 64,
+        emb_size_trip: int = 32,  # 64
         emb_size_rbf: int = 16,
         emb_size_cbf: int = 16,
         emb_size_bil_trip: int = 64,
@@ -113,6 +114,12 @@ class GemNetT(torch.nn.Module):
         rbf: dict = {"name": "gaussian"},
         envelope: dict = {"name": "polynomial", "exponent": 5},
         cbf: dict = {"name": "spherical_harmonics"},
+        vector_fields: dict = {
+            "type": "grad",
+            "edges": [],
+            "triplets": ["n_ij", "n_ik", "angle"],
+            "normalize": False,
+        },
         output_init: str = "HeOrthogonal",
         activation: str = "swish",
         scale_file: Optional[str] = None,
@@ -174,7 +181,15 @@ class GemNetT(torch.nn.Module):
             activation=None,
             bias=False,
         )
+        self.mlp_cbf_out = Dense(
+            num_spherical,
+            emb_size_cbf,
+            activation=None,
+            bias=False,
+        )
         ### ------------------------------------------------------------------------------------- ###
+
+        self.vector_fields = make_vector_fields(vector_fields)
 
         # Embedding block
         self.atom_emb = AtomEmbedding(emb_size_atom)
@@ -212,9 +227,12 @@ class GemNetT(torch.nn.Module):
                 OutputBlock(
                     emb_size_atom=emb_size_atom,
                     emb_size_edge=emb_size_edge,
+                    emb_size_trip=emb_size_trip,
                     emb_size_rbf=emb_size_rbf,
+                    emb_size_cbf=emb_size_cbf,
                     nHidden=num_atom,
                     num_targets=1,
+                    num_vector_fields=self.vector_fields.triplets_dim,
                     activation=activation,
                     output_init=output_init,
                     direct_forces=True,
@@ -453,6 +471,7 @@ class GemNetT(torch.nn.Module):
             neighbors,
             D_st,
             V_st,
+            cell_offsets,
             id_swap,
             id3_ba,
             id3_ca,
@@ -489,6 +508,7 @@ class GemNetT(torch.nn.Module):
             neighbors,
             D_st,
             V_st,
+            offset,
             id_swap,
             id3_ba,
             id3_ca,
@@ -498,7 +518,7 @@ class GemNetT(torch.nn.Module):
 
         # Calculate triplet angles
         cosφ_cab = inner_product_normalized(V_st[id3_ca], V_st[id3_ba])
-        rad_cbf3, cbf3 = self.cbf_basis3(D_st, cosφ_cab, id3_ca)
+        rad_cbf3, sbf3 = self.cbf_basis3(D_st, cosφ_cab, id3_ca)
 
         rbf = self.radial_basis(D_st)
 
@@ -510,12 +530,15 @@ class GemNetT(torch.nn.Module):
         m = self.edge_emb(h, rbf, idx_s, idx_t)  # (nEdges, emb_size_edge)
 
         rbf3 = self.mlp_rbf3(rbf)
-        cbf3 = self.mlp_cbf3(rad_cbf3, cbf3, id3_ca, id3_ragged_idx)
+        cbf3 = self.mlp_cbf3(rad_cbf3, sbf3, id3_ca, id3_ragged_idx)
 
         rbf_h = self.mlp_rbf_h(rbf)
         rbf_out = self.mlp_rbf_out(rbf)
+        cbf_out = self.mlp_cbf_out(sbf3)
 
-        E_t, F_st = self.out_blocks[0](h, m, rbf_out, idx_t)
+        E_t, F_st, S_st = self.out_blocks[0](
+            h, m, rbf_out, cbf_out, idx_t, id3_ba, id3_ca
+        )
         # (nAtoms, num_targets), (nEdges, num_targets)
 
         for i in range(self.num_blocks):
@@ -534,19 +557,24 @@ class GemNetT(torch.nn.Module):
                 idx_t=idx_t,
             )  # (nAtoms, emb_size_atom), (nEdges, emb_size_edge)
 
-            E, F = self.out_blocks[i + 1](h, m, rbf_out, idx_t)
+            E, F, S = self.out_blocks[i + 1](
+                h, m, rbf_out, cbf_out, idx_t, id3_ba, id3_ca
+            )
             # (nAtoms, num_targets), (nEdges, num_targets)
-            F_st += F
             E_t += E
+            F_st += F
+            S_st += S
 
         nMolecules = torch.max(batch) + 1
 
+        # ========================== ENERGY ==========================
         # always use mean aggregation
         E_t = scatter(
             E_t, batch, dim=0, dim_size=nMolecules, reduce="mean"
         )  # (nMolecules, num_targets)
         # if predict forces, there should be only 1 energy
 
+        # ========================== FORCES ==========================
         # map forces in edge directions
         F_st_vec = F_st[:, :, None] * V_st[:, None, :]
         # (nEdges, num_targets, 3)
@@ -559,7 +587,45 @@ class GemNetT(torch.nn.Module):
         )  # (nAtoms, num_targets, 3)
         F_t = F_t.squeeze(1)  # (nAtoms, 3)
 
-        return (x + F_t) % 1.0, F_t, h  # (nMolecules, num_targets), (nAtoms, 3)
+        # ========================== STRESS ==========================
+        batch_triplets = batch[idx_s[id3_ba]]
+
+        e_ij = x[idx_s[id3_ba]] - x[idx_t[id3_ba]] + offset[id3_ba]
+        e_ik = x[idx_s[id3_ca]] - x[idx_t[id3_ca]] + offset[id3_ca]
+
+        """
+        v_ij = torch.bmm(cell[batch_triplets], -e_ij.unsqueeze(2)).squeeze(2)
+        v_ik = torch.bmm(cell[batch_triplets], -e_ik.unsqueeze(2)).squeeze(2)
+
+        print(v_ij / D_st[id3_ba, None])
+        print(V_st[id3_ba])
+
+        print((V_st[id3_ba] - v_ij / D_st[id3_ba, None]).abs().max())
+        print((V_st[id3_ca] - v_ik / D_st[id3_ca, None]).abs().max())
+        """
+
+        vector_fields = self.vector_fields(cell, batch_triplets, e_ij, e_ik)
+        filter_nan = ~(
+            (vector_fields != vector_fields).view(vector_fields.shape[0], -1).any(dim=1)
+        )
+
+        batch_triplets = batch_triplets[filter_nan]
+        fields = (S_st[filter_nan, :, None, None] * vector_fields[filter_nan]).sum(
+            dim=1
+        )
+        I = torch.eye(3, 3, device=cell.device)[None]
+        S_t = I + scatter(
+            fields, batch_triplets, dim=0, dim_size=cell.shape[0], reduce="mean"
+        )  # 1st order approx of matrix exp
+        cell_prime = torch.bmm(S_t, cell)
+
+        return (
+            (x + F_t) % 1.0,
+            F_t,
+            h,
+            cell_prime,
+            S_t,
+        )  # (nMolecules, num_targets), (nAtoms, 3)
 
     @property
     def num_params(self):

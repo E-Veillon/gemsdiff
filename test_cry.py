@@ -1,7 +1,3 @@
-import os
-
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:1024"
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,24 +11,29 @@ from ase.visualize.plot import plot_atoms
 from ase.io import write
 from ase.spacegroup import crystal
 
-from utils.materials_project import MaterialsProject
+import os
+
+from utils.data import MaterialsProject, MP20, Carbon24, Perov5
 from model.cry.attention import Denoiser
 from loss.min_distance_loss import MinDistanceLoss
 from loss.periodic_relative_loss import PeriodicRelativeLoss
 from loss.relative_loss import RelativeLoss
+from loss.lattice_loss import LossLatticeParameters
+from utils.scaler import LatticeScaler
 
-batch_size = 64
+device = "cuda"
+batch_size = 128
 
-dataset = MaterialsProject("./data/mp", pre_filter=lambda x: x.num_atoms <= 32)
+#dataset = MaterialsProject("./data/mp", pre_filter=lambda x: x.num_atoms <= 32)
+dataset = MP20("./data/mp-20","train")
 loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-print("load", len(dataset), "structures")
+scaler = LatticeScaler().to(device)
+scaler.fit(loader)
 
-model = Denoiser(256, 8, 4, hidden_dim=128).to("cuda")
-loss_fn = MinDistanceLoss(center=True).to("cuda")
-# loss_relative = PeriodicRelativeLoss().to("cuda")
-loss_relative = RelativeLoss().to("cuda")
-# loss_fn = nn.BCEWithLogitsLoss()
+model = Denoiser(256, 8, 4, hidden_dim=128).to(device)
+loss_pos_fn = MinDistanceLoss(center=True).to(device)
+loss_lattice_fn = LossLatticeParameters(lattice_scaler=scaler).to(device)
 
 opt = optim.Adam(model.parameters(), lr=1e-3)
 
@@ -151,44 +152,49 @@ def save_snapshot(batch, model, filename, n=(6, 2), figsize=(30, 30)):
 
 
 for batch in loader:
-    batch_valid = batch.to("cuda")
+    batch_valid = batch.to(device)
     x_thild = (batch.pos + 0.1 * torch.randn_like(batch.pos)) % 1.0
     batch_valid.x_thild = x_thild
     break
 
 history = []
-logs = {"batch": [], "loss": []}
+logs = {"batch": [], "loss": [], "loss_pos": [], "loss_lat": []}
+"""
 for name, param in model.named_parameters():
     if param.requires_grad:
         logs[f"{name}.mean"] = []
         logs[f"{name}.std"] = []
         logs[f"{name}.grad.mean"] = []
         logs[f"{name}.grad.std"] = []
+"""
 
 batch_idx = 0
 for epoch in tqdm.tqdm(range(256), leave=True, position=0):
-    losses, losses_rec, losses_rel = [], [], []
+    losses, losses_pos, losses_lat = [], [], []
     it = tqdm.tqdm(loader, leave=False, position=1)
 
     for batch in it:
-        batch = batch.to("cuda")
+        batch = batch.to(device)
 
         opt.zero_grad()
 
         x_thild = (batch.pos + 0.1 * torch.randn_like(batch.pos)) % 1.0
         batch.x_thild = x_thild
+        rho_thild = torch.bmm(
+            torch.matrix_exp(0.3 * torch.randn_like(batch.cell)), batch.cell
+        )
 
-        x_prime = model.forward(
-            batch.cell, batch.pos, x_thild, batch.z, batch.num_atoms
+        x_prime, rho_prime = model.forward(
+            rho_thild, batch.pos, x_thild, batch.z, batch.num_atoms
         )
 
         # if mu is None:
         #    mu, sigma = mask.float().mean(), mask.float().std()
 
         # loss = F.mse_loss(pred_edges, (mask.float() - mu) / sigma)
-        loss_rec = loss_fn(batch.cell, batch.pos, x_prime, batch.num_atoms)
-        loss, detailed = loss_relative(batch.cell, batch.pos, x_prime, batch.num_atoms)
-        loss = loss_rec
+        loss_pos = 10*loss_pos_fn(batch.cell, batch.pos, x_prime, batch.num_atoms)
+        loss_lat = loss_lattice_fn(rho_prime, batch.cell)
+        loss = loss_pos + loss_lat
         loss.backward()
 
         # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -222,14 +228,21 @@ for epoch in tqdm.tqdm(range(256), leave=True, position=0):
 
         # loss_zero = loss_fn(batch.cell, batch.pos, x_thild, batch.num_atoms).item()
         losses.append(loss.item())
+        losses_pos.append(loss_pos.item())
+        losses_lat.append(loss_lat.item())
 
         # it.set_description(f"loss: {loss.item():.3f}/{loss_zero:.3f}")
-        it.set_description(f"loss: {loss.item():.3f} rec={loss_rec.item():.3f}")
+        it.set_description(
+            f"loss: {loss.item():.3f} atomic pos={loss_pos.item():.3f} lattice={loss_lat.item():.3f}"
+        )
 
         if (batch_idx % 16) == 0:
             logs["batch"].append(batch_idx)
             logs["loss"].append(torch.tensor(losses).mean().item())
+            logs["loss_pos"].append(torch.tensor(losses_pos).mean().item())
+            logs["loss_lat"].append(torch.tensor(losses_lat).mean().item())
 
+            """
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     logs[f"{name}.mean"].append(param.data.mean().item())
@@ -240,15 +253,19 @@ for epoch in tqdm.tqdm(range(256), leave=True, position=0):
                     else:
                         logs[f"{name}.grad.mean"].append(0.0)
                         logs[f"{name}.grad.std"].append(0.0)
+            """
 
             pd.DataFrame(logs).set_index("batch").to_csv(
                 os.path.join(logs_path, "loss.csv")
             )
 
             plt.close()
+            plt.subplot(311)
             plt.plot(logs["batch"], logs["loss"])
+            plt.subplot(312)
+            plt.plot(logs["batch"], logs["loss_pos"])
+            plt.subplot(313)
+            plt.plot(logs["batch"], logs["loss_lat"])
             plt.savefig(os.path.join(logs_path, "loss.png"))
-
-            # save_snapshot(batch_valid, model, os.path.join(logs_path, f"{batch_idx}.png"))
 
         batch_idx += 1
