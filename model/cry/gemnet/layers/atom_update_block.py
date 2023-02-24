@@ -6,11 +6,13 @@ LICENSE file in the root directory of this source tree.
 """
 
 import torch
+import torch.nn as nn
 from torch_scatter import scatter
 
 from ..initializers import he_orthogonal_init
 from .base_layers import Dense, ResidualLayer
 from .scaling import ScalingFactor
+
 
 class AtomUpdateBlock(torch.nn.Module):
     """
@@ -157,9 +159,63 @@ class OutputBlock(AtomUpdateBlock):
             )
 
         if self.stress:
+            """
             self.seq_stress = self.get_mlp(
                 emb_size_edge * 2, emb_size_trip, nHidden, activation
             )
+            """
+            self.emb_size_trip = emb_size_trip
+            self.num_vector_fields = num_vector_fields
+            """
+            self.seq_stress = self.get_mlp(
+                emb_size_edge,
+                num_vector_fields * emb_size_trip,
+                nHidden,
+                activation,
+            )
+            """
+
+            """
+            self.seq_stress = self.get_mlp(
+                emb_size_edge,
+                emb_size_trip,
+                nHidden,
+                activation,
+            )
+            self.bilinear = nn.Parameter(
+                torch.empty(
+                    emb_size_trip,
+                    emb_size_trip,
+                    self.num_vector_fields,
+                )
+            )
+            self.bilinear_geom = nn.Parameter(
+                torch.empty(
+                    self.num_vector_fields,
+                    2 * emb_size_rbf + emb_size_cbf,
+                    self.num_vector_fields,
+                )
+            )
+            """
+            n_layers = 1
+            hidden_dim = 64
+            layers = [
+                nn.Linear(
+                    2 * emb_size_edge + 2 * emb_size_rbf + emb_size_cbf,
+                    hidden_dim,
+                    bias=False,
+                ),
+                nn.SiLU(),
+            ]
+            for _ in range(n_layers):
+                layers.extend(
+                    [nn.Linear(hidden_dim, hidden_dim, bias=False), nn.SiLU()]
+                )
+            layers.append(nn.Linear(hidden_dim, self.num_vector_fields, bias=False))
+
+            self.dense_S = nn.Sequential(*layers)
+
+            """
             self.out_stress = Dense(
                 emb_size_trip, num_vector_fields, bias=False, activation=None
             )
@@ -169,6 +225,7 @@ class OutputBlock(AtomUpdateBlock):
             self.dense_cbf_S = Dense(
                 emb_size_cbf, emb_size_trip, activation=None, bias=False
             )
+            """
 
         self.reset_parameters()
 
@@ -177,6 +234,11 @@ class OutputBlock(AtomUpdateBlock):
             self.out_energy.reset_parameters(he_orthogonal_init)
             if self.direct_forces:
                 self.out_forces.reset_parameters(he_orthogonal_init)
+            """
+            if self.stress:
+                he_orthogonal_init(self.bilinear.data)
+                he_orthogonal_init(self.bilinear_geom.data)
+            """
         elif self.output_init == "zeros":
             self.out_energy.reset_parameters(torch.nn.init.zeros_)
             if self.direct_forces:
@@ -226,15 +288,48 @@ class OutputBlock(AtomUpdateBlock):
 
         # --------------------------------------- Stress Prediction -------------------------------------- #
         if self.stress:
+            x_emb = torch.cat((m[id3_i], m[id3_j], rbf[id3_i], rbf[id3_j], cbf), dim=1)
+
+            x_S = self.dense_S(x_emb)
+
+            """
+            m_emb = m
+            for layer in self.seq_stress:
+                m_emb = layer(m_emb)
+
+            x_S = torch.einsum(
+                "ijk,bi,bj->bk", self.bilinear, m_emb[id3_i], m_emb[id3_j]
+            )
+            geom_emb = torch.cat((rbf[id3_i], rbf[id3_j], cbf), dim=1)
+            # x_S = torch.einsum("ijk,bi,bj->bk", self.bilinear_geom, x_S, geom_emb)
+
+            for layer in self.dense_S:
+                geom_emb = layer(geom_emb)
+
+            x_S = x_S * geom_emb
+            """
+
+            """
+            m_emb = m
+            for i, layer in enumerate(self.seq_stress):
+                m_emb = layer(m_emb)
+            m_emb = m_emb.view(
+                m_emb.shape[0], self.num_vector_fields, self.emb_size_trip
+            )
+            x_S = (m_emb[id3_i] * m_emb[id3_j]).sum(dim=2)
+            """
+
+            """
             x_S = torch.cat((m[id3_i], m[id3_j]), dim=1)
             for i, layer in enumerate(self.seq_stress):
                 x_S = layer(x_S)  # (nTriplets, emb_size_trip)
 
-            rbf_emb_S = self.dense_rbf_S(rbf)  # (nTriplets, emb_size_trip)
-            cbf_emb_S = self.dense_cbf_S(cbf)  # (nTriplets, emb_size_trip)
-            x_S = x_S * rbf_emb_S[id3_i] * cbf_emb_S
+            # rbf_emb_S = self.dense_rbf_S(rbf)  # (nTriplets, emb_size_trip)
+            # cbf_emb_S = self.dense_cbf_S(cbf)  # (nTriplets, emb_size_trip)
+            # x_S = x_S * rbf_emb_S[id3_i] * cbf_emb_S
 
             x_S = self.out_stress(x_S)  # (nEdges, num_vector_fields)
+            """
         else:
             x_S = 0
         # ----------------------------------------------------------------------------------------------- #

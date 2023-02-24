@@ -171,136 +171,19 @@ class EGNN(nn.Module):
 class Denoiser(nn.Module):
     def __init__(
         self,
-        features: int,
-        mpnn_layers: int,
-        egnn_layers: int,
-        hidden_dim: int = 64,
-        knn: int = 32,
-        z_max: int = 100,
-        hard_attention: bool = True,
+        features: int
     ):
         super().__init__()
 
-        self.knn = knn
-
-        """
-        self.embedding = nn.Embedding(z_max, features)
-        self.mpnn = nn.ModuleList(
-            [EGNN(features, hidden_dim, pos_update=False) for _ in range(mpnn_layers)]
-        )
-        self.actions = nn.ModuleList([EGNN(features, hidden_dim, pos_update=True, attention=False) for _ in range(egnn_layers)])
-        # self.actions = EGNN(features, hidden_dim, pos_update=True, attention=True)
-        """
-
         self.gemnet = GemNetT(features)
-
-        self.covalent_radii = nn.Parameter(
-            torch.from_numpy(covalent_radii).float(), requires_grad=False
-        )
-
-        self.attention = Edges(features, 1)
-
-        idx = torch.tensor([-1, 0, 1])
-        self.offset = nn.Parameter(
-            torch.stack(torch.meshgrid(idx, idx, idx), dim=-1).view(-1, 3),
-            requires_grad=False,
-        )
-
-        self.hard_attention = hard_attention
-
-    def mask_covalent(
-        self,
-        cell: torch.FloatTensor,
-        x: torch.FloatTensor,
-        z: torch.FloatTensor,
-        batch: torch.LongTensor,
-        edges: crystallographic_graph.Edges,
-        margin: float = 2.0,
-    ) -> torch.BoolTensor:
-        e_ij = x[edges.dst, :] + edges.cell - x[edges.src, :]
-        r_ij = torch.bmm(cell[batch[edges.src]], e_ij.unsqueeze(2)).norm(dim=(1, 2))
-
-        threshold = (
-            self.covalent_radii[z[edges.src]] + self.covalent_radii[z[edges.dst]]
-        ) * margin
-
-        mask = r_ij < threshold
-
-        return mask
-
-    @torch.no_grad()
-    def get_graph(
-        self, cell: torch.FloatTensor, x: torch.FloatTensor, num_atoms: torch.LongTensor
-    ) -> Geometry:
-        j, i = crystallographic_graph.sparse_meshgrid(num_atoms)
-        mask = j != i
-        i, j = i[mask], j[mask]
-
-        edges = crystallographic_graph.Edges(
-            src=i.repeat_interleave(self.offset.shape[0]),
-            dst=j.repeat_interleave(self.offset.shape[0]),
-            cell=self.offset.repeat(i.shape[0], 1),
-        )
-
-        geometry = Geometry(cell, num_atoms, x, triplets=False, edges_idx=edges)
-
-        return geometry
-
-    def is_in(
-        self, edges: crystallographic_graph.Edges, others: crystallographic_graph.Edges
-    ) -> torch.BoolTensor:
-        edges = torch.cat(
-            (edges.src.unsqueeze(1), edges.dst.unsqueeze(1), edges.cell), dim=1
-        )
-        others = torch.cat(
-            (others.src.unsqueeze(1), others.dst.unsqueeze(1), others.cell), dim=1
-        )
-
-        min_edges = torch.minimum(edges.min(dim=0).values, others.min(dim=0).values)
-        span_edges = (
-            torch.maximum(edges.max(dim=0).values, others.max(dim=0).values) - min_edges
-        )
-
-        cumprod = F.pad(span_edges, (1, 0), value=1.0).cumprod(0)
-        offset = cumprod[:-1]
-
-        edges_idx = ((edges - min_edges) * offset).sum(dim=1)
-        others_idx = ((others - min_edges) * offset).sum(dim=1)
-
-        others_idx = others_idx.sort().values
-        find_idx = torch.bucketize(edges_idx, others_idx)
-        mask = edges_idx == others_idx[find_idx.clamp(0, others_idx.shape[0] - 1)]
-
-        return mask
 
     def forward(
         self,
         cell: torch.FloatTensor,
-        x: torch.FloatTensor,
         x_thild: torch.FloatTensor,
         z: torch.FloatTensor,
         num_atoms: torch.LongTensor,
     ) -> torch.FloatTensor:
-        # geometry = self.get_graph(cell, x_thild, num_atoms)
-        # close_geometry = Geometry(cell, num_atoms, x, knn=16, triplets=False)
-
-        # mask = self.is_in(geometry.edges, close_geometry.edges).unsqueeze(1)
-        # geometry.filter_edges(mask)
-
+        
         _, x_traj, _, rho_prime, _ = self.gemnet(cell, x_thild, z, num_atoms)
         return x_traj, rho_prime
-
-        geometry = Geometry(cell, num_atoms, x_thild, knn=self.knn, triplets=False)
-
-        h = self.embedding(z)
-
-        for layer in self.mpnn:
-            h = layer(geometry, h)
-
-        for layer in self.actions:
-            x_prime, _, h = self.actions[0](geometry, h)
-            # x_prime, x_diff, h = layer(geometry, h)
-            geometry.x = x_prime
-            geometry.update_vectors()
-
-        return x_prime

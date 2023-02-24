@@ -15,6 +15,7 @@ import os
 
 from utils.data import MaterialsProject, MP20, Carbon24, Perov5
 from model.cry.attention import Denoiser
+from model.cry.aaai.operator.autoencoder import AutoEncoder
 from loss.min_distance_loss import MinDistanceLoss
 from loss.periodic_relative_loss import PeriodicRelativeLoss
 from loss.relative_loss import RelativeLoss
@@ -25,22 +26,37 @@ from utils.scaler import LatticeScaler
 device = "cuda"
 batch_size = 128
 
-# dataset = MaterialsProject("./data/mp", pre_filter=lambda x: x.num_atoms <= 32)
-dataset = MP20("./data/mp-20", "train")
+# dataset = MaterialsProject("../data/mp", pre_filter=lambda x: x.num_atoms <= 32)
+dataset = MP20("../data/mp-20", "train")
 loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 scaler = LatticeScaler().to(device)
 scaler.fit(loader)
 
-model = Denoiser(256, 8, 4, hidden_dim=128).to(device)
-loss_pos_fn = OptimalTrajLoss(center=True, euclidian=True).to(device)
+# model = Denoiser(512).to(device)
+
+model = AutoEncoder(
+    features=128,
+    knn=32,
+    ops_config={
+        "type": "grad",
+        "normalize": True,
+        "edges": ["n_ij"],
+        "triplets": ["n_ij", "n_ik", "angle"],
+    },
+    layers=6,
+    scale_hidden_dim=256,
+    scale_reduce_rho="mean",
+).to(device)
+
+loss_pos_fn = OptimalTrajLoss(center=True, euclidian=True, distance="l1").to(device)
 loss_lattice_fn = LossLatticeParameters(lattice_scaler=scaler).to(device)
 
-opt = optim.Adam(model.parameters(), lr=1e-3)
+opt = optim.Adam(model.parameters(), lr=3e-4)
 
 mu, sigma = None, None
 
-logs_path = "./logs_gemnet"
+logs_path = "./logs_aaai"
 os.makedirs(logs_path, exist_ok=True)
 
 
@@ -71,33 +87,6 @@ def save_grad(batch, model, filename=None):
         torch.save(data, filename)
 
     return data
-
-
-def grad_mask(batch, model, idx):
-    opt.zero_grad()
-    mask = batch.batch == idx
-
-    batch_masked = batch.clone()
-
-    batch_masked.cell = batch_masked.cell[idx : idx + 1]
-    batch_masked.material_id = batch_masked.material_id[idx : idx + 1]
-    batch_masked.num_atoms = batch_masked.num_atoms[idx : idx + 1]
-    batch_masked.y = batch_masked.y[idx : idx + 1]
-    batch_masked.pos = batch_masked.pos[mask]
-    batch_masked.z = batch_masked.z[mask]
-    batch_masked.batch = batch_masked.batch[mask]
-    batch_masked.x_thild = batch_masked.x_thild[mask]
-
-    x_prime, _ = model.forward(
-        batch_masked.cell,
-        batch_masked.pos,
-        x_thild,
-        batch_masked.z,
-        batch_masked.num_atoms,
-    )
-    loss, detailed = loss_relative(batch.cell, batch.pos, x_prime, batch.num_atoms)
-    loss.backward()
-    return model.actions[0].pos[2].weight.grad
 
 
 def save_snapshot(batch, model, filename, n=(6, 2), figsize=(30, 30)):
@@ -181,13 +170,9 @@ for epoch in tqdm.tqdm(range(256), leave=True, position=0):
 
         x_thild = (batch.pos + 0.1 * torch.randn_like(batch.pos)) % 1.0
         batch.x_thild = x_thild
-        rho_thild = torch.bmm(
-            torch.matrix_exp(0.3 * torch.randn_like(batch.cell)), batch.cell
-        )
 
-        x_traj, rho_prime = model.forward(
-            rho_thild, batch.pos, x_thild, batch.z, batch.num_atoms
-        )
+        eye = torch.eye(3, device=device).unsqueeze(0).repeat(batch.cell.shape[0], 1, 1)
+        x_traj, rho_prime = model.forward(eye, x_thild, batch.z, batch.num_atoms)
 
         # if mu is None:
         #    mu, sigma = mask.float().mean(), mask.float().std()
@@ -245,6 +230,8 @@ for epoch in tqdm.tqdm(range(256), leave=True, position=0):
             logs["loss"].append(torch.tensor(losses).mean().item())
             logs["loss_pos"].append(torch.tensor(losses_pos).mean().item())
             logs["loss_lat"].append(torch.tensor(losses_lat).mean().item())
+
+            losses, losses_pos, losses_lat = [], [], []
 
             """
             for name, param in model.named_parameters():
