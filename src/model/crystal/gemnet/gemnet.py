@@ -32,7 +32,7 @@ from .utils import (
 )
 from .layers.grad.vector_fields import make_vector_fields
 
-from utils.geometry import Geometry
+from src.utils.geometry import Geometry
 from crystallographic_graph import sparse_meshgrid
 
 
@@ -99,6 +99,7 @@ class GemNetT(torch.nn.Module):
     def __init__(
         self,
         latent_dim: int,
+        knn:int=32,
         num_spherical: int = 7,
         num_radial: int = 128,
         num_blocks: int = 3,
@@ -113,7 +114,6 @@ class GemNetT(torch.nn.Module):
         num_concat: int = 1,
         num_atom: int = 3,
         cutoff: float = 6.0,
-        max_neighbors: int = 50,
         rbf: dict = {"name": "gaussian"},
         envelope: dict = {"name": "polynomial", "exponent": 5},
         cbf: dict = {"name": "spherical_harmonics"},
@@ -129,13 +129,13 @@ class GemNetT(torch.nn.Module):
     ):
         super().__init__()
         assert num_blocks > 0
+        assert knn > 0
         self.num_blocks = num_blocks
+
+        self.knn = knn
 
         self.cutoff = cutoff
         # assert self.cutoff <= 6 or otf_graph
-
-        self.max_neighbors = max_neighbors
-        # assert self.max_neighbors == 50 or otf_graph
 
         ### ---------------------------------- Basis Functions ---------------------------------- ###
         self.radial_basis = RadialBasis(
@@ -278,7 +278,7 @@ class GemNetT(torch.nn.Module):
             cell,
             num_atoms,
             x,
-            knn=32,
+            knn=self.knn,
             triplets=False,
             symetric=True,
             compute_reverse_idx=True,
@@ -408,7 +408,7 @@ class GemNetT(torch.nn.Module):
 
         return (
             (x + F_t_in) % 1.0,
-            F_t,
+            F_t_in,
             h,
             cell_prime,
             S_t,

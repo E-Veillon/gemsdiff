@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch_geometric.loader import DataLoader
+from torch_scatter import scatter_mean
 import pandas as pd
 import tqdm
 
@@ -12,251 +13,347 @@ from ase.io import write
 from ase.spacegroup import crystal
 
 import os
+import json
+import math
+import random
+import datetime
 
-from utils.data import MaterialsProject, MP20, Carbon24, Perov5
-from model.cry.attention import Denoiser
-from model.cry.aaai.operator.autoencoder import AutoEncoder
-from loss.min_distance_loss import MinDistanceLoss
-from loss.periodic_relative_loss import PeriodicRelativeLoss
-from loss.relative_loss import RelativeLoss
-from loss.optimal_traj import OptimalTrajLoss
-from loss.lattice_loss import LossLatticeParameters
-from utils.scaler import LatticeScaler
-
-device = "cuda"
-batch_size = 128
-
-# dataset = MaterialsProject("../data/mp", pre_filter=lambda x: x.num_atoms <= 32)
-dataset = MP20("../data/mp-20", "train")
-loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-scaler = LatticeScaler().to(device)
-scaler.fit(loader)
-
-# model = Denoiser(512).to(device)
-
-model = AutoEncoder(
-    features=128,
-    knn=32,
-    ops_config={
-        "type": "grad",
-        "normalize": True,
-        "edges": ["n_ij"],
-        "triplets": ["n_ij", "n_ik", "angle"],
-    },
-    layers=6,
-    scale_hidden_dim=256,
-    scale_reduce_rho="mean",
-).to(device)
-
-loss_pos_fn = OptimalTrajLoss(center=True, euclidian=True, distance="l1").to(device)
-loss_lattice_fn = LossLatticeParameters(lattice_scaler=scaler).to(device)
-
-opt = optim.Adam(model.parameters(), lr=3e-4)
-
-mu, sigma = None, None
-
-logs_path = "./logs_aaai"
-os.makedirs(logs_path, exist_ok=True)
+from src.utils.scaler import LatticeScaler
+from src.utils.data import MP20, Carbon24, Perov5
+from src.utils.hparams import Hparams
+from src.utils.snapshot import save_snapshot
+from src.utils.metrics import get_metrics
+from src.model.crystal import EGNNDenoiser, GemNetDenoiser
+from src.loss import OptimalTrajLoss, LatticeParametersLoss
 
 
-def save_grad(batch, model, filename=None):
-    batch = batch.clone().cpu().detach()
+def get_dataloader(path: str, dataset: str, batch_size: int):
+    assert dataset in ["mp-20", "carbon-24", "perov-5"]
 
-    data = {
-        "batch": {
-            "cell": batch.cell,
-            "x": batch.pos,
-            "x_thild": batch.x_thild,
-            "z": batch.z,
-            "num_atoms": batch.num_atoms,
-        },
-        "model": {
-            k: (
-                {"weigths": v.data.clone()}
-                if v.grad is None
-                else {"weigths": v.data.clone(), "grad": v.grad.clone()}
-            )
-            for k, v in model.named_parameters()
-        },
-    }
+    if dataset == "mp-20":
+        dataset_path = os.path.join(path, "mp-20")
+        train_set = MP20(dataset_path, "train")
+        valid_set = MP20(dataset_path, "val")
+        test_set = MP20(dataset_path, "test")
+    elif dataset == "carbon-24":
+        dataset_path = os.path.join(path, "carbon-24")
+        train_set = Carbon24(dataset_path, "train")
+        valid_set = Carbon24(dataset_path, "val")
+        test_set = Carbon24(dataset_path, "test")
+    elif dataset == "perov-5":
+        dataset_path = os.path.join(path, "mp-20")
+        train_set = Perov5(dataset_path, "train")
+        valid_set = Perov5(dataset_path, "val")
+        test_set = Perov5(dataset_path, "test")
 
-    if filename is not None:
-        path, _ = os.path.split(os.path.abspath(filename))
-        os.makedirs(path, exist_ok=True)
-        torch.save(data, filename)
+    loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+    loader_valid = DataLoader(valid_set, batch_size=batch_size, shuffle=True)
+    loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=True)
 
-    return data
+    return loader_train, loader_valid, loader_test
 
 
-def save_snapshot(batch, model, filename, n=(6, 2), figsize=(30, 30)):
-    _, x_traj = model.forward(
-        batch.cell, batch.pos, batch.x_thild, batch.z, batch.num_atoms
-    )
-    _, ax = plt.subplots(n[0], n[1] * 3, figsize=figsize)
+def build_model(hparams: Hparams) -> nn.Module:
+    assert hparams.model in ["gemnet", "egnn"]
 
-    batch_cpu = batch.clone()
-    batch_cpu = batch_cpu.cpu().detach()
-
-    for i in range(n[0]):
-        for j in range(n[1]):
-            idx = j + i * n[1]
-            mask = batch_cpu.batch == idx
-
-            path, _ = os.path.splitext(os.path.abspath(filename))
-            path = os.path.join(path, f"{idx}")
-            os.makedirs(path, exist_ok=True)
-
-            atoms = crystal(
-                batch_cpu.z[mask].numpy(),
-                basis=batch_cpu.x_thild[mask].numpy(),
-                cell=batch_cpu.cell[idx].numpy(),
-            )
-            write(os.path.join(path, f"noisy.cif"), atoms)
-            plot_atoms(atoms, ax[i][j * 3 + 0], radii=0.3)
-
-            atoms.set_scaled_positions(x_traj[mask].cpu().detach().numpy())
-            write(os.path.join(path, f"denoised.cif"), atoms)
-            plot_atoms(atoms, ax[i][j * 3 + 1], radii=0.3)
-
-            atoms.set_scaled_positions(batch_cpu.pos[mask].numpy())
-            write(os.path.join(path, f"original.cif"), atoms)
-            plot_atoms(atoms, ax[i][j * 3 + 2], radii=0.3)
-    plt.savefig(filename)
-    plt.close()
-
-    for idx in range(n[0] * n[1]):
-        ax = plt.figure().add_subplot(projection="3d")
-
-        mask = batch_cpu.batch == idx
-
-        x, y, z = batch_cpu.cell[idx] @ batch_cpu.x_thild[mask].t()
-        x_t, y_t, z_t = batch_cpu.cell[idx] @ x_traj[mask].cpu().detach().t()
-
-        ax.scatter(x, y, z, c=batch_cpu.z[mask])
-        for a, b, c, d, e, f in zip(x, y, z, x_t, y_t, z_t):
-            ax.plot([a, d], [b, e], [c, f], c="black")
-
-        plt.savefig(f"sample_{idx}.png")
-        plt.close()
-
-
-for batch in loader:
-    batch_valid = batch.to(device)
-    x_thild = (batch.pos + 0.1 * torch.randn_like(batch.pos)) % 1.0
-    batch_valid.x_thild = x_thild
-    break
-
-history = []
-logs = {"batch": [], "loss": [], "loss_pos": [], "loss_lat": []}
-"""
-for name, param in model.named_parameters():
-    if param.requires_grad:
-        logs[f"{name}.mean"] = []
-        logs[f"{name}.std"] = []
-        logs[f"{name}.grad.mean"] = []
-        logs[f"{name}.grad.std"] = []
-"""
-
-batch_idx = 0
-for epoch in tqdm.tqdm(range(256), leave=True, position=0):
-    losses, losses_pos, losses_lat = [], [], []
-    it = tqdm.tqdm(loader, leave=False, position=1)
-
-    for batch in it:
-        batch = batch.to(device)
-
-        opt.zero_grad()
-
-        x_thild = (batch.pos + 0.1 * torch.randn_like(batch.pos)) % 1.0
-        batch.x_thild = x_thild
-
-        eye = torch.eye(3, device=device).unsqueeze(0).repeat(batch.cell.shape[0], 1, 1)
-        x_traj, rho_prime = model.forward(eye, x_thild, batch.z, batch.num_atoms)
-
-        # if mu is None:
-        #    mu, sigma = mask.float().mean(), mask.float().std()
-
-        # loss = F.mse_loss(pred_edges, (mask.float() - mu) / sigma)
-        loss_pos = loss_pos_fn(batch.cell, batch.pos, x_thild, x_traj, batch.num_atoms)
-        loss_lat = loss_lattice_fn(rho_prime, batch.cell)
-        loss = loss_pos + loss_lat
-        loss.backward()
-
-        # loss_pos ~ 0.52
-        # loss_lat ~ 0.82
-
-        # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-        # save_grad(batch, model, os.path.join(logs_path, f"{batch_idx}.pt"))
-
-        """
-        history.append(save_grad(batch, model))
-        if len(history) > 32:
-            history = history[-32:]
-
-        # actions.0.pos.2.weight
-        for action in model.actions:
-            if (action.pos[2].weight.grad is not None) and (
-                action.pos[2].weight.grad.mean() > 1.0
-            ):
-                import matplotlib.pyplot as plt
-
-                plt.hist(detailed.clone().detach().cpu().numpy(), bins=32)
-                plt.savefig(os.path.join(logs_path, f"hist_loss.png"))
-                save_snapshot(batch, model, "test.png")
-
-                torch.save(history, "history.pt")
-
-                breakpoint()
-                break
-        """
-
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        opt.step()
-
-        # loss_zero = loss_fn(batch.cell, batch.pos, x_thild, batch.num_atoms).item()
-        losses.append(loss.item())
-        losses_pos.append(loss_pos.item())
-        losses_lat.append(loss_lat.item())
-
-        # it.set_description(f"loss: {loss.item():.3f}/{loss_zero:.3f}")
-        it.set_description(
-            f"loss: {loss.item():.3f} atomic pos={loss_pos.item():.3f} lattice={loss_lat.item():.3f}"
+    if hparams.model == "gemnet":
+        return GemNetDenoiser(
+            hparams.features,
+            knn=hparams.knn,
+            num_blocks=hparams.layers,
+            vector_fields=hparams.vector_fields,
+        )
+    elif hparams.model == "egnn":
+        return EGNNDenoiser(
+            features=hparams.features,
+            knn=hparams.knn,
+            vector_fields=hparams.vector_fields,
+            layers=hparams.layers,
+            limit_actions=0.5,
+            scale_hidden_dim=256,
+            scale_reduce_rho="mean",
         )
 
-        if (batch_idx % 16) == 0:
-            logs["batch"].append(batch_idx)
-            logs["loss"].append(torch.tensor(losses).mean().item())
-            logs["loss_pos"].append(torch.tensor(losses_pos).mean().item())
-            logs["loss_lat"].append(torch.tensor(losses_lat).mean().item())
 
-            losses, losses_pos, losses_lat = [], [], []
+if __name__ == "__main__":
+    import argparse
 
-            """
-            for name, param in model.named_parameters():
-                if param.requires_grad:
-                    logs[f"{name}.mean"].append(param.data.mean().item())
-                    logs[f"{name}.std"].append(param.data.std().item())
-                    if param.grad is not None:
-                        logs[f"{name}.grad.mean"].append(param.grad.mean().item())
-                        logs[f"{name}.grad.std"].append(param.grad.std().item())
-                    else:
-                        logs[f"{name}.grad.mean"].append(0.0)
-                        logs[f"{name}.grad.std"].append(0.0)
-            """
+    from torch.utils.tensorboard import SummaryWriter
 
-            pd.DataFrame(logs).set_index("batch").to_csv(
-                os.path.join(logs_path, "loss.csv")
+    parser = argparse.ArgumentParser(description="train denoising model")
+    parser.add_argument("--hparams", "-H", default=None, help="json file")
+    parser.add_argument("--logs", "-l", default="./runs/denoising")
+    parser.add_argument("--dataset", "-D", default="mp-20")
+    parser.add_argument("--dataset-path", "-dp", default="./data")
+    parser.add_argument("--device", "-d", default="cuda")
+
+    args = parser.parse_args()
+
+    noise_pos = 0.05
+
+    # run name
+    tday = datetime.datetime.now()
+    run_name = tday.strftime(
+        f"training_%Y_%m_%d_%H_%M_%S_{args.dataset}_{random.randint(0,1000):<03d}"
+    )
+    print("run name:", run_name)
+
+    log_dir = os.path.join(args.logs, run_name)
+
+    os.makedirs(log_dir, exist_ok=True)
+
+    writer = SummaryWriter(log_dir=log_dir, flush_secs=3)
+
+    # basic setup
+    device = args.device
+
+    hparams = Hparams()
+    if args.hparams is not None:
+        hparams.from_json(args.hparams)
+
+    with open(os.path.join(log_dir, "hparams.json"), "w") as fp:
+        json.dump(hparams.dict(), fp, indent=4)
+
+    print("hparams:")
+    print(json.dumps(hparams.dict(), indent=4))
+
+    loader_train, loader_valid, loader_test = get_dataloader(
+        args.dataset_path, args.dataset, hparams.batch_size
+    )
+
+    scaler = LatticeScaler().to(device)
+    scaler.fit(loader_train)
+
+    model = build_model(hparams).to(device)
+
+    loss_pos_fn = OptimalTrajLoss(center=True, euclidian=True, distance="l1").to(device)
+    loss_lattice_fn = LatticeParametersLoss(lattice_scaler=scaler).to(device)
+
+    opt = optim.Adam(model.parameters(), lr=hparams.lr, betas=(hparams.beta1, 0.999))
+
+    logs = {"batch": [], "loss": [], "loss_pos": [], "loss_lat": []}
+
+    batch_idx = 0
+    for epoch in tqdm.tqdm(range(hparams.epochs), leave=True, position=0):
+        losses, losses_pos, losses_lat = [], [], []
+
+        it = tqdm.tqdm(loader_train, leave=False, position=1)
+
+        for batch in it:
+            batch = batch.to(device)
+
+            opt.zero_grad()
+
+            opti_traj = noise_pos * torch.randn_like(batch.pos)
+            opti_traj -= scatter_mean(
+                opti_traj, batch.batch, dim=0, dim_size=batch.cell.shape[0]
+            )[batch.batch]
+
+            x_thild = (batch.pos + opti_traj) % 1.0
+
+            eye = (
+                torch.eye(3, device=device)
+                .unsqueeze(0)
+                .repeat(batch.cell.shape[0], 1, 1)
+            )
+            x_prime, x_traj, rho_prime = model.forward(
+                eye, x_thild, batch.z, batch.num_atoms
             )
 
-            plt.close()
-            plt.subplot(311)
-            plt.plot(logs["batch"], logs["loss"])
-            plt.subplot(312)
-            plt.plot(logs["batch"], logs["loss_pos"])
-            plt.subplot(313)
-            plt.plot(logs["batch"], logs["loss_lat"])
-            plt.savefig(os.path.join(logs_path, "loss.png"))
+            loss_pos = loss_pos_fn(
+                batch.cell, batch.pos, x_thild, x_traj, batch.num_atoms
+            )
+            loss_lat = loss_lattice_fn(rho_prime, batch.cell)
+            if hparams.train_pos:
+                loss = loss_pos + loss_lat
+            else:
+                loss = loss_lat
+            loss.backward()
 
-        batch_idx += 1
+            metrics = get_metrics(
+                batch.cell, rho_prime, batch.pos, x_prime, batch.num_atoms
+            )
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), hparams.grad_clipping)
+            opt.step()
+
+            # loss_zero = loss_fn(batch.cell, batch.pos, x_thild, batch.num_atoms).item()
+            losses.append(loss.item())
+            losses_pos.append(loss_pos.item())
+            losses_lat.append(loss_lat.item())
+
+            # it.set_description(f"loss: {loss.item():.3f}/{loss_zero:.3f}")
+            it.set_description(
+                f"loss: {loss.item():.3f} atomic pos={loss_pos.item():.3f} lattice={loss_lat.item():.3f}"
+            )
+
+            batch_idx += 1
+
+        losses = torch.tensor(losses).mean().item()
+        losses_pos = torch.tensor(losses_pos).mean().item()
+        losses_lat = torch.tensor(losses_lat).mean().item()
+
+        writer.add_scalar("train/loss", losses, batch_idx)
+        writer.add_scalar("train/loss_pos", losses_pos, batch_idx)
+        writer.add_scalar("train/loss_lattice", losses_lat, batch_idx)
+
+        logs["batch"].append(batch_idx)
+        logs["loss"].append(losses)
+        logs["loss_pos"].append(losses_pos)
+        logs["loss_lat"].append(losses_lat)
+
+        pd.DataFrame(logs).set_index("batch").to_csv(os.path.join(log_dir, "loss.csv"))
+
+        with torch.no_grad():
+            valid_losses = []
+            valid_losses_pos = []
+            valid_losses_lat = []
+
+            valid_rho = []
+            valid_rho_prime = []
+            valid_x = []
+            valid_x_prime = []
+            valid_num_atoms = []
+
+            for batch in tqdm.tqdm(
+                loader_valid, leave=False, position=1, desc="validation"
+            ):
+                batch = batch.to(device)
+
+                x_thild = (batch.pos + noise_pos * torch.randn_like(batch.pos)) % 1.0
+
+                eye = (
+                    torch.eye(3, device=device)
+                    .unsqueeze(0)
+                    .repeat(batch.cell.shape[0], 1, 1)
+                )
+                x_prime, x_traj, rho_prime = model.forward(
+                    eye, x_thild, batch.z, batch.num_atoms
+                )
+
+                loss_pos = loss_pos_fn(
+                    batch.cell, batch.pos, x_thild, x_traj, batch.num_atoms
+                )
+                loss_lat = loss_lattice_fn(rho_prime, batch.cell)
+                if hparams.train_pos:
+                    loss = loss_pos + loss_lat
+                else:
+                    loss = loss_lat
+
+                valid_rho.append(batch.cell)
+                valid_rho_prime.append(rho_prime)
+                valid_x.append(batch.pos)
+                valid_x_prime.append(x_prime)
+                valid_num_atoms.append(batch.num_atoms)
+
+                valid_losses.append(loss.item())
+                valid_losses_pos.append(loss_pos.item())
+                valid_losses_lat.append(loss_lat.item())
+
+            losses = torch.tensor(losses).mean().item()
+            losses_pos = torch.tensor(losses_pos).mean().item()
+            losses_lat = torch.tensor(losses_lat).mean().item()
+
+            writer.add_scalar("valid/loss", losses, batch_idx)
+            writer.add_scalar("valid/loss_pos", losses_pos, batch_idx)
+            writer.add_scalar("valid/loss_lattice", losses_lat, batch_idx)
+
+            valid_rho = torch.cat(valid_rho, dim=0)
+            valid_rho_prime = torch.cat(valid_rho_prime, dim=0)
+            valid_x = torch.cat(valid_x, dim=0)
+            valid_x_prime = torch.cat(valid_x_prime, dim=0)
+            valid_num_atoms = torch.cat(valid_num_atoms, dim=0)
+
+            metrics = get_metrics(
+                valid_rho, valid_rho_prime, valid_x, valid_x_prime, valid_num_atoms
+            )
+
+            writer.add_scalar("valid/mae_pos", metrics["mae_pos"], batch_idx)
+            writer.add_scalar("valid/mae_lengths", metrics["mae_lengths"], batch_idx)
+            writer.add_scalar("valid/mae_angles", metrics["mae_angles"], batch_idx)
+
+            # save_snapshot(batch, model, os.path.join(log_dir, "snapshot.png"),noise_pos=noise_pos)
+
+    with torch.no_grad():
+        test_losses = []
+        test_losses_pos = []
+        test_losses_lat = []
+
+        test_rho = []
+        test_rho_prime = []
+        test_x = []
+        test_x_prime = []
+        test_num_atoms = []
+
+        for batch in tqdm.tqdm(loader_test, leave=False, position=1, desc="testing"):
+            batch = batch.to(device)
+
+            x_thild = (batch.pos + noise_pos * torch.randn_like(batch.pos)) % 1.0
+            batch.x_thild = x_thild
+
+            eye = (
+                torch.eye(3, device=device)
+                .unsqueeze(0)
+                .repeat(batch.cell.shape[0], 1, 1)
+            )
+            x_prime, x_traj, rho_prime = model.forward(
+                eye, x_thild, batch.z, batch.num_atoms
+            )
+
+            loss_pos = loss_pos_fn(
+                batch.cell, batch.pos, x_thild, x_traj, batch.num_atoms
+            )
+            loss_lat = loss_lattice_fn(rho_prime, batch.cell)
+            if hparams.train_pos:
+                loss = loss_pos + loss_lat
+            else:
+                loss = loss_lat
+
+            test_rho.append(batch.cell)
+            test_rho_prime.append(rho_prime)
+            test_x.append(batch.pos)
+            test_x_prime.append(x_prime)
+            test_num_atoms.append(batch.num_atoms)
+
+            test_losses.append(loss.item())
+            test_losses_pos.append(loss_pos.item())
+            test_losses_lat.append(loss_lat.item())
+
+        losses = torch.tensor(losses).mean().item()
+        losses_pos = torch.tensor(losses_pos).mean().item()
+        losses_lat = torch.tensor(losses_lat).mean().item()
+
+        test_rho = torch.cat(test_rho, dim=0)
+        test_rho_prime = torch.cat(test_rho_prime, dim=0)
+        test_x = torch.cat(test_x, dim=0)
+        test_x_prime = torch.cat(test_x_prime, dim=0)
+        test_num_atoms = torch.cat(test_num_atoms, dim=0)
+
+        metrics = {
+            "loss": losses,
+            "loss_pos": losses_pos,
+            "loss_lattice": losses_lat,
+            **get_metrics(
+                test_rho, test_rho_prime, test_x, test_x_prime, test_num_atoms
+            ),
+        }
+
+        with open(os.path.join(log_dir, "metrics.json"), "w") as fp:
+            json.dump(metrics, fp, indent=4)
+
+        print("\nmetrics:")
+        print(json.dumps(metrics, indent=4))
+
+        writer.add_scalar("test/loss", losses, batch_idx)
+        writer.add_scalar("test/loss_pos", losses_pos, batch_idx)
+        writer.add_scalar("test/loss_lattice", losses_lat, batch_idx)
+
+        writer.add_scalar("test/mae_pos", metrics["mae_pos"], batch_idx)
+        writer.add_scalar("test/mae_lengths", metrics["mae_lengths"], batch_idx)
+        writer.add_scalar("test/mae_angles", metrics["mae_angles"], batch_idx)
+
+        writer.add_hparams(hparams.dict(), metrics)
+
+        # save_snapshot(batch, model, os.path.join(log_dir, "snapshot.png"),noise_pos=noise_pos)
+
+    writer.close()

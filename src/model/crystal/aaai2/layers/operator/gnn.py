@@ -6,9 +6,7 @@ from torch_scatter import scatter
 from typing import Tuple
 
 from utils.geometry import Geometry
-
 from utils.shape import build_shapes, assert_tensor_match, shape
-
 from .operator import Operator, make_operator
 
 
@@ -328,79 +326,3 @@ class MPNN(nn.Module):
         h_prime = self.update_f(h, mi)
 
         return h_prime
-
-
-class ActionsPos(nn.Module):
-    def __init__(
-        self,
-        features: int,
-        hidden_dim: int,
-        n_layers: int,
-    ):
-        super().__init__()
-
-        self.interact_edges = EdgeProj(
-            features,
-            output_dim=1,
-            hidden_dim=hidden_dim,
-            n_layers=n_layers,
-            bias=True,
-        )
-
-        self.I = nn.Parameter(torch.eye(3), requires_grad=False)
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        self.interact_edges.reset_parameters()
-
-    def apply(
-        self,
-        geometry: Geometry,
-        edges_weights: torch.FloatTensor,
-        check_tensor: bool = True,
-    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.LongTensor]:
-        # type checking and size evaluation
-        if check_tensor:
-            shapes = assert_tensor_match(
-                (geometry.cell, shape("b", 3, 3, dtype=torch.float32)),
-                (geometry.batch, shape("n", dtype=torch.long)),
-                (geometry.edges.src, shape("e", dtype=torch.long)),
-                (geometry.edges.dst, shape("e", dtype=torch.long)),
-                (geometry.edges.cell, shape("e", 3, dtype=torch.long)),
-            )
-        else:
-            shapes = build_shapes(
-                {
-                    "b": geometry.cell.shape[0],
-                    "n": geometry.batch.shape[0],
-                }
-            )
-
-        # aggregation
-        weighted_ops = geometry.edges_e_ij * edges_weights
-        x_traj = scatter(
-            weighted_ops,
-            geometry.edges.src,
-            dim=0,
-            dim_size=shapes.n,
-            reduce="mean",
-        )
-
-        x_traj_euc = torch.bmm(
-            geometry.cell[geometry.batch], x_traj.unsqueeze(2)
-        ).squeeze(2)
-
-        return (geometry.x + x_traj) % 1.0, x_traj, x_traj_euc
-
-    def forward(
-        self,
-        geometry: Geometry,
-        h: torch.FloatTensor,
-    ) -> torch.FloatTensor:
-
-        edges_weights = self.interact_edges(
-            h, geometry.edges.src, geometry.edges.dst, geometry.edges_r_ij
-        )
-
-        return edges_weights

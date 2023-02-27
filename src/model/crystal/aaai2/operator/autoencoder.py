@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import model.cry.aaai.layers.operator.gnn as ops
+from model.cry.aaai.operator.utils import build_mlp
 from utils.geometry import Geometry
 
 from torch_scatter import scatter_mean
@@ -17,7 +18,9 @@ class AutoEncoder(nn.Module):
         knn: int,
         ops_config: dict,
         layers: int,
+        scale_limit_weights: float,
         scale_hidden_dim: int,
+        scale_limit_actions: float,
         scale_reduce_rho: str,
     ):
         super(AutoEncoder, self).__init__()
@@ -42,22 +45,11 @@ class AutoEncoder(nn.Module):
                     features,
                     knn,
                     ops_config,
-                    scale_k=0.0,
+                    scale_k=scale_limit_weights,
                     hidden_dim=scale_hidden_dim,
                     n_layers=1,
-                    limit_actions=0.0,
+                    limit_actions=scale_limit_actions,
                     reduce_rho=scale_reduce_rho,
-                )
-                for _ in range(layers)
-            ]
-        )
-
-        self.actions_pos = nn.ModuleList(
-            [
-                ops.ActionsPos(
-                    features,
-                    hidden_dim=scale_hidden_dim,
-                    n_layers=1,
                 )
                 for _ in range(layers)
             ]
@@ -92,11 +84,9 @@ class AutoEncoder(nn.Module):
 
         rho_list = []
         actions_list = []
-        traj_sum = 0
 
         for i in range(self.layers):
             actions = self.actions[i]
-            actions_pos = self.actions_pos[i]
             update = self.update[i]
 
             h = update(geometry, h)
@@ -110,13 +100,61 @@ class AutoEncoder(nn.Module):
             rho_list.append(rho_prime)
             actions_list.append(action_rho)
 
-            edges_weights = actions_pos(geometry, h)
-            _, x_traj, x_cart_traj = actions_pos.apply(geometry, edges_weights)
-
-            traj_sum += x_cart_traj
-
-            geometry.x += x_traj
             geometry.cell = rho_prime
             geometry.update_vectors()
 
-        return traj_sum, rho_prime
+        return geometry.cell  # , rho_list, actions_list
+
+
+class AutoEncoderMLP(nn.Module):
+    def __init__(
+        self,
+        features: int,
+        knn: int,
+        layers: int,
+        lattice_scaler=None,
+    ):
+        super(AutoEncoderMLP, self).__init__()
+
+        self.knn = knn
+
+        self.layers = layers
+
+        self.lattice_scaler = lattice_scaler
+
+        self.embedding = nn.Embedding(100, features)
+
+        self.I = nn.Parameter(torch.eye(3), requires_grad=False)
+
+        self.mpnn = nn.ModuleList([ops.MPNN(features=features) for _ in range(layers)])
+
+        self.lattice_pred = build_mlp(features, 128, 4, 6)
+
+    @property
+    def device(self):
+        return self.embedding.weight.device
+
+    def actions_init(self, cell: torch.FloatTensor) -> torch.FloatTensor:
+        return self.I.unsqueeze(0).repeat(cell.shape[0], 1, 1)
+
+    def forward(
+        self,
+        cell: torch.FloatTensor,
+        x: torch.FloatTensor,
+        z: torch.FloatTensor,
+        struct_size: torch.LongTensor,
+    ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
+        cell = self.actions_init(cell)
+
+        geometry = Geometry(cell, struct_size, x % 1, knn=self.knn)
+
+        h = self.embedding(z)
+
+        for l in self.mpnn:
+            h = l(geometry, h)
+
+        latent = scatter_mean(h, geometry.batch, dim=0)
+
+        lattice = self.lattice_pred(latent)
+
+        return (lattice[:, :3], lattice[:, 3:])

@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 import crystallographic_graph
 
-from loss.min_distance_loss import MinDistanceLoss
+from .min_distance_loss import MinDistanceLoss
 
 
 class PeriodicRelativeLoss(nn.Module):

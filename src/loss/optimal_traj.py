@@ -61,6 +61,8 @@ class OptimalTrajLoss(nn.Module):
         x_traj: torch.FloatTensor,
         num_atoms: torch.LongTensor,
     ) -> torch.FloatTensor:
+        x = x % 1.0
+        x_tilde = x_tilde % 1.0
 
         struct_idx = torch.arange(cell.shape[0], device=cell.device)
         batch = struct_idx.repeat_interleave(num_atoms)
@@ -75,16 +77,12 @@ class OptimalTrajLoss(nn.Module):
 
         idx = torch.arange(min_idx.shape[0], dtype=torch.long, device=min_idx.device)
         if self.euclidian:
-            optimal_traj = traj[idx, min_idx]
+            optimal_traj = -traj[idx, min_idx]
+            x_traj = torch.bmm(cell[batch], x_traj.unsqueeze(2)).squeeze(2)
         else:
-            optimal_traj = x_tilde - x_offset[idx, min_idx]
-
-        if self.center:
-            optimal_traj -= scatter_mean(
-                optimal_traj, batch, dim=0, dim_size=cell.shape[0]
-            )[batch]
+            optimal_traj = -(x_tilde - x_offset[idx, min_idx])
 
         if self.distance == "l1":
-            return F.l1_loss(x_traj, optimal_traj)
+            return (x_traj - optimal_traj).abs().mean()
         if self.distance == "mse":
             return F.mse_loss(x_traj, optimal_traj)

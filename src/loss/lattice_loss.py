@@ -2,12 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils.scaler import LatticeScaler
+from src.utils.scaler import LatticeScaler
 
 from typing import Dict, Tuple, Union
 
 
-class LossLatticeParameters(nn.Module):
+class LatticeParametersLoss(nn.Module):
     def __init__(self, lattice_scaler: LatticeScaler = None, distance: str = "l1"):
         super().__init__()
         assert distance in ["l1", "mse"]
@@ -22,10 +22,13 @@ class LossLatticeParameters(nn.Module):
 
     def forward(
         self,
-        source: torch.FloatTensor,
+        source: Union[torch.FloatTensor, Tuple[torch.FloatTensor, torch.FloatTensor]],
         target: Union[torch.FloatTensor, Tuple[torch.FloatTensor, torch.FloatTensor]],
     ) -> torch.FloatTensor:
-        param_src = self.lattice_scaler.normalise_lattice(source)
+        if isinstance(target, tuple):
+            param_src = self.lattice_scaler.normalise(source)
+        else:
+            param_src = self.lattice_scaler.normalise_lattice(source)
 
         if isinstance(target, tuple):
             param_tgt = self.lattice_scaler.normalise(target)

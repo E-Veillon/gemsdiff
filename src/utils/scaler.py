@@ -19,8 +19,9 @@ class LatticeScaler(nn.Module):
         )
         self.std = nn.Parameter(torch.ones(6, dtype=torch.float32), requires_grad=False)
 
+    @staticmethod
     def get_lattices_parameters(
-        self, lattices: torch.FloatTensor
+        lattices: torch.FloatTensor
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
         lengths = lattices.norm(dim=2)
 
@@ -78,7 +79,7 @@ class LatticeScaler(nn.Module):
             iterator = dataloader
 
         for batch in iterator:
-            current_lengths, current_angles = self.get_lattices_parameters(batch.cell)
+            current_lengths, current_angles = LatticeScaler.get_lattices_parameters(batch.cell)
             lengths.append(current_lengths)
             angles.append(current_angles)
 
@@ -95,7 +96,7 @@ class LatticeScaler(nn.Module):
     def normalise_lattice(
         self, lattices: torch.FloatTensor
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
-        lengths, angles = self.get_lattices_parameters(lattices)
+        lengths, angles = LatticeScaler.get_lattices_parameters(lattices)
 
         return self.normalise(lengths, angles)
 
