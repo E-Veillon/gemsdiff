@@ -223,7 +223,15 @@ if __name__ == "__main__":
             ):
                 batch = batch.to(device)
 
-                x_thild = (batch.pos + noise_pos * torch.randn_like(batch.pos)) % 1.0
+                opti_traj = noise_pos * torch.randn_like(batch.pos)
+                opti_traj -= scatter_mean(
+                    opti_traj, batch.batch, dim=0, dim_size=batch.cell.shape[0]
+                )[batch.batch]
+
+                if hparams.train_pos:
+                    x_thild = (batch.pos + opti_traj) % 1.0
+                else:
+                    x_thild = batch.pos
 
                 eye = (
                     torch.eye(3, device=device)
@@ -291,8 +299,15 @@ if __name__ == "__main__":
         for batch in tqdm.tqdm(loader_test, leave=False, position=1, desc="testing"):
             batch = batch.to(device)
 
-            x_thild = (batch.pos + noise_pos * torch.randn_like(batch.pos)) % 1.0
-            batch.x_thild = x_thild
+            opti_traj = noise_pos * torch.randn_like(batch.pos)
+            opti_traj -= scatter_mean(
+                opti_traj, batch.batch, dim=0, dim_size=batch.cell.shape[0]
+            )[batch.batch]
+
+            if hparams.train_pos:
+                x_thild = (batch.pos + opti_traj) % 1.0
+            else:
+                x_thild = batch.pos
 
             eye = (
                 torch.eye(3, device=device)
