@@ -149,7 +149,10 @@ if __name__ == "__main__":
                 opti_traj, batch.batch, dim=0, dim_size=batch.cell.shape[0]
             )[batch.batch]
 
-            x_thild = (batch.pos + opti_traj) % 1.0
+            if hparams.train_pos:
+                x_thild = (batch.pos + opti_traj) % 1.0
+            else:
+                x_thild = batch.pos
 
             eye = (
                 torch.eye(3, device=device)
