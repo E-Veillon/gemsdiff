@@ -30,18 +30,16 @@ from src.loss import OptimalTrajLoss, LatticeParametersLoss
 def get_dataloader(path: str, dataset: str, batch_size: int):
     assert dataset in ["mp-20", "carbon-24", "perov-5"]
 
+    dataset_path = os.path.join(path, dataset)
     if dataset == "mp-20":
-        dataset_path = os.path.join(path, "mp-20")
         train_set = MP20(dataset_path, "train")
         valid_set = MP20(dataset_path, "val")
         test_set = MP20(dataset_path, "test")
     elif dataset == "carbon-24":
-        dataset_path = os.path.join(path, "carbon-24")
         train_set = Carbon24(dataset_path, "train")
         valid_set = Carbon24(dataset_path, "val")
         test_set = Carbon24(dataset_path, "test")
     elif dataset == "perov-5":
-        dataset_path = os.path.join(path, "mp-20")
         train_set = Perov5(dataset_path, "train")
         valid_set = Perov5(dataset_path, "val")
         test_set = Perov5(dataset_path, "test")
@@ -133,7 +131,10 @@ if __name__ == "__main__":
 
     logs = {"batch": [], "loss": [], "loss_pos": [], "loss_lat": []}
 
+    best_val = float("inf")
+
     batch_idx = 0
+    snapshot_idx = 0
     for epoch in tqdm.tqdm(range(hparams.epochs), leave=True, position=0):
         losses, losses_pos, losses_lat = [], [], []
 
@@ -264,6 +265,15 @@ if __name__ == "__main__":
             losses = torch.tensor(losses).mean().item()
             losses_pos = torch.tensor(losses_pos).mean().item()
             losses_lat = torch.tensor(losses_lat).mean().item()
+
+            if losses < best_val:
+                best_val = losses
+                torch.save(model.state_dict(), os.path.join(log_dir, "best.pt"))
+
+                snapshot_path = os.path.join(log_dir, f"snapshot")
+                os.makedirs(snapshot_path,exist_ok=True)
+                save_snapshot(batch, model, os.path.join(snapshot_path, f"{snapshot_idx}.png"))
+                snapshot_idx+=1
 
             writer.add_scalar("valid/loss", losses, batch_idx)
             writer.add_scalar("valid/loss_pos", losses_pos, batch_idx)
