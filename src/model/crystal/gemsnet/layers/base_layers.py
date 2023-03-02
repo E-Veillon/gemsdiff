@@ -42,7 +42,7 @@ class Dense(torch.nn.Module):
             self._activation = torch.nn.Identity()
         else:
             raise NotImplementedError(
-                "Activation function not implemented for GemNet (yet)."
+                "Activation function not implemented for GemsNet (yet)."
             )
 
     def reset_parameters(self, initializer=he_orthogonal_init):

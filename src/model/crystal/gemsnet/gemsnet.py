@@ -36,9 +36,9 @@ from src.utils.geometry import Geometry
 from crystallographic_graph import sparse_meshgrid
 
 
-class GemNetT(torch.nn.Module):
+class GemsNetT(torch.nn.Module):
     """
-    GemNet-T, triplets-only variant of GemNet
+    GemsNet
 
     Parameters
     ----------
@@ -205,7 +205,7 @@ class GemNetT(torch.nn.Module):
         int_blocks = []
 
         # Interaction Blocks
-        interaction_block = InteractionBlockTripletsOnly  # GemNet-(d)T
+        interaction_block = InteractionBlockTripletsOnly
         for i in range(num_blocks):
             int_blocks.append(
                 interaction_block(

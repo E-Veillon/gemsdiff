@@ -18,7 +18,7 @@ class Hparams:
     vector_fields_edges: str = ""
     vector_fields_triplets: str = "n_ij|n_ik|angle"
 
-    model:str = "gemnet"
+    model:str = "gemsnet"
 
     layers: int = 3
 

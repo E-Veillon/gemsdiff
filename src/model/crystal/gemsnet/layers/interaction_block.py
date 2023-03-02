@@ -20,7 +20,7 @@ from .scaling import ScalingFactor
 
 class InteractionBlockTripletsOnly(torch.nn.Module):
     """
-    Interaction block for GemNet-T/dT.
+    Interaction block for GemsNet-T/dT.
 
     Parameters
     ----------

@@ -23,7 +23,7 @@ from src.utils.data import MP20, Carbon24, Perov5
 from src.utils.hparams import Hparams
 from src.utils.snapshot import save_snapshot
 from src.utils.metrics import get_metrics
-from src.model.crystal import EGNNDenoiser, GemNetDenoiser
+from src.model.crystal import EGNNDenoiser, GemsNetDenoiser
 from src.loss import OptimalTrajLoss, LatticeParametersLoss
 
 
@@ -52,10 +52,10 @@ def get_dataloader(path: str, dataset: str, batch_size: int):
 
 
 def build_model(hparams: Hparams) -> nn.Module:
-    assert hparams.model in ["gemnet", "egnn"]
+    assert hparams.model in ["gemsnet", "egnn"]
 
-    if hparams.model == "gemnet":
-        return GemNetDenoiser(
+    if hparams.model == "gemsnet":
+        return GemsNetDenoiser(
             hparams.features,
             knn=hparams.knn,
             num_blocks=hparams.layers,

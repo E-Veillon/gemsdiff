@@ -4,9 +4,9 @@ import torch.nn.functional as F
 
 from typing import Tuple
 
-from .gemnet import GemNetT
+from .gemsnet import GemsNetT
 
-class GemNetDenoiser(nn.Module):
+class GemsNetDenoiser(nn.Module):
     def __init__(
         self,
         features: int,
@@ -16,7 +16,7 @@ class GemNetDenoiser(nn.Module):
     ):
         super().__init__()
 
-        self.gemnet = GemNetT(features,knn=knn,vector_fields=vector_fields)
+        self.gemsnet = GemsNetT(features,knn=knn,vector_fields=vector_fields)
 
     def forward(
         self,
@@ -26,5 +26,5 @@ class GemNetDenoiser(nn.Module):
         num_atoms: torch.LongTensor,
     ) -> torch.FloatTensor:
         
-        x_prime, x_traj, _, rho_prime, _ = self.gemnet(cell, x_thild, z, num_atoms)
+        x_prime, x_traj, _, rho_prime, _ = self.gemsnet(cell, x_thild, z, num_atoms)
         return x_prime, x_traj, rho_prime
