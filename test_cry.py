@@ -23,7 +23,7 @@ from src.utils.data import MP20, Carbon24, Perov5
 from src.utils.hparams import Hparams
 from src.utils.snapshot import save_snapshot
 from src.utils.metrics import get_metrics
-from src.model.crystal import EGNNDenoiser, GemsNetDenoiser
+from src.model.gemsnet import GemsNetDenoiser, GemsNetVAE
 from src.loss import OptimalTrajLoss, LatticeParametersLoss
 
 
@@ -44,15 +44,21 @@ def get_dataloader(path: str, dataset: str, batch_size: int):
         valid_set = Perov5(dataset_path, "val")
         test_set = Perov5(dataset_path, "test")
 
-    loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-    loader_valid = DataLoader(valid_set, batch_size=batch_size, shuffle=True)
-    loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=True)
+    loader_train = DataLoader(
+        train_set, batch_size=batch_size, shuffle=True, num_workers=4
+    )
+    loader_valid = DataLoader(
+        valid_set, batch_size=batch_size, shuffle=True, num_workers=4
+    )
+    loader_test = DataLoader(
+        test_set, batch_size=batch_size, shuffle=True, num_workers=4
+    )
 
     return loader_train, loader_valid, loader_test
 
 
 def build_model(hparams: Hparams) -> nn.Module:
-    assert hparams.model in ["gemsnet", "egnn"]
+    assert hparams.model in ["gemsnet", "vae"]
 
     if hparams.model == "gemsnet":
         return GemsNetDenoiser(
@@ -61,15 +67,12 @@ def build_model(hparams: Hparams) -> nn.Module:
             num_blocks=hparams.layers,
             vector_fields=hparams.vector_fields,
         )
-    elif hparams.model == "egnn":
-        return EGNNDenoiser(
-            features=hparams.features,
+    if hparams.model == "vae":
+        return GemsNetVAE(
+            hparams.features,
             knn=hparams.knn,
+            num_blocks=hparams.layers,
             vector_fields=hparams.vector_fields,
-            layers=hparams.layers,
-            limit_actions=0.5,
-            scale_hidden_dim=256,
-            scale_reduce_rho="mean",
         )
 
 
@@ -155,19 +158,19 @@ if __name__ == "__main__":
             else:
                 x_thild = batch.pos
 
-            eye = (
-                torch.eye(3, device=device)
-                .unsqueeze(0)
-                .repeat(batch.cell.shape[0], 1, 1)
+            rho_thild = torch.bmm(
+                torch.matrix_exp(0.3 * torch.randn_like(batch.cell)), batch.cell
             )
+
             x_prime, x_traj, rho_prime = model.forward(
-                eye, x_thild, batch.z, batch.num_atoms
+                rho_thild, x_thild, batch.z, batch.num_atoms
             )
 
             loss_pos = loss_pos_fn(
                 batch.cell, batch.pos, x_thild, x_traj, batch.num_atoms
             )
-            loss_lat = loss_lattice_fn(rho_prime, batch.cell)
+            # loss_lat = loss_lattice_fn(rho_prime, batch.cell)
+            loss_lat = loss_lattice_fn(rho_prime, rho_thild)
             if hparams.train_pos:
                 loss = loss_pos + loss_lat
             else:
@@ -234,13 +237,12 @@ if __name__ == "__main__":
                 else:
                     x_thild = batch.pos
 
-                eye = (
-                    torch.eye(3, device=device)
-                    .unsqueeze(0)
-                    .repeat(batch.cell.shape[0], 1, 1)
+                rho_thild = torch.bmm(
+                    torch.matrix_exp(0.0 * torch.randn_like(batch.cell)), batch.cell
                 )
+
                 x_prime, x_traj, rho_prime = model.forward(
-                    eye, x_thild, batch.z, batch.num_atoms
+                    rho_thild, x_thild, batch.z, batch.num_atoms
                 )
 
                 loss_pos = loss_pos_fn(
@@ -271,9 +273,11 @@ if __name__ == "__main__":
                 torch.save(model.state_dict(), os.path.join(log_dir, "best.pt"))
 
                 snapshot_path = os.path.join(log_dir, f"snapshot")
-                os.makedirs(snapshot_path,exist_ok=True)
-                save_snapshot(batch, model, os.path.join(snapshot_path, f"{snapshot_idx}.png"))
-                snapshot_idx+=1
+                os.makedirs(snapshot_path, exist_ok=True)
+                save_snapshot(
+                    batch, model, os.path.join(snapshot_path, f"{snapshot_idx}.png")
+                )
+                snapshot_idx += 1
 
             writer.add_scalar("valid/loss", losses, batch_idx)
             writer.add_scalar("valid/loss_pos", losses_pos, batch_idx)
@@ -319,13 +323,12 @@ if __name__ == "__main__":
             else:
                 x_thild = batch.pos
 
-            eye = (
-                torch.eye(3, device=device)
-                .unsqueeze(0)
-                .repeat(batch.cell.shape[0], 1, 1)
+            rho_thild = torch.bmm(
+                torch.matrix_exp(0.0 * torch.randn_like(batch.cell)), batch.cell
             )
+
             x_prime, x_traj, rho_prime = model.forward(
-                eye, x_thild, batch.z, batch.num_atoms
+                rho_thild, x_thild, batch.z, batch.num_atoms
             )
 
             loss_pos = loss_pos_fn(

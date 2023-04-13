@@ -3,7 +3,7 @@ import json
 
 @dataclass
 class Hparams:
-    batch_size: int = 256
+    batch_size: int = 128
     epochs: int = 256
 
     lr: float = 1e-3
@@ -18,11 +18,11 @@ class Hparams:
     vector_fields_edges: str = ""
     vector_fields_triplets: str = "n_ij|n_ik|angle"
 
-    model:str = "gemsnet"
+    model:str = "vae"
 
     layers: int = 3
 
-    train_pos: bool = True
+    train_pos: bool = False
 
     @property
     def vector_fields(self):

@@ -5,7 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 """
 
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import torch
@@ -99,7 +99,6 @@ class GemsNetT(torch.nn.Module):
     def __init__(
         self,
         latent_dim: int,
-        knn:int=32,
         num_spherical: int = 7,
         num_radial: int = 128,
         num_blocks: int = 3,
@@ -123,16 +122,20 @@ class GemsNetT(torch.nn.Module):
             "triplets": ["n_ij", "n_ik", "angle"],
             "normalize": True,
         },
+        z_input: Union[str, int] = "embedding",
+        energy_targets: int = 1,
+        compute_energy: bool = True,
+        compute_forces: bool = True,
+        compute_stress: bool = True,
         output_init: str = "HeOrthogonal",
         activation: str = "swish",
         scale_file: Optional[str] = None,
     ):
         super().__init__()
         assert num_blocks > 0
-        assert knn > 0
-        self.num_blocks = num_blocks
+        assert z_input == "embedding" or (isinstance(z_input, int) and z_input > 0)
 
-        self.knn = knn
+        self.num_blocks = num_blocks
 
         self.cutoff = cutoff
         # assert self.cutoff <= 6 or otf_graph
@@ -192,18 +195,29 @@ class GemsNetT(torch.nn.Module):
         )
         ### ------------------------------------------------------------------------------------- ###
 
-        self.vector_fields = make_vector_fields(vector_fields)
+        self.compute_energy = compute_energy
+        self.compute_forces = compute_forces
+        self.compute_stress = compute_stress
+
+        if self.compute_stress:
+            self.vector_fields = make_vector_fields(vector_fields)
+
+        self.output_block = (
+            self.compute_energy or self.compute_forces or self.compute_stress
+        )
 
         # Embedding block
-        self.atom_emb = AtomEmbedding(emb_size_atom)
+        if z_input == "embedding":
+            self.atom_emb = AtomEmbedding(emb_size_atom)
+        else:
+            self.atom_emb = nn.Linear(z_input, emb_size_atom)
+
         self.atom_latent_emb = nn.Linear(emb_size_atom + latent_dim, emb_size_atom)
         self.edge_emb = EdgeEmbedding(
             emb_size_atom, num_radial, emb_size_edge, activation=activation
         )
 
-        out_blocks = []
         int_blocks = []
-
         # Interaction Blocks
         interaction_block = InteractionBlockTripletsOnly
         for i in range(num_blocks):
@@ -225,27 +239,31 @@ class GemsNetT(torch.nn.Module):
                 )
             )
 
-        for i in range(num_blocks + 1):
-            out_blocks.append(
-                OutputBlock(
-                    emb_size_atom=emb_size_atom,
-                    emb_size_edge=emb_size_edge,
-                    emb_size_trip=emb_size_trip,
-                    emb_size_rbf=emb_size_rbf,
-                    emb_size_cbf=emb_size_cbf,
-                    nHidden=num_atom,
-                    num_targets=1,
-                    num_vector_fields=self.vector_fields.triplets_dim,
-                    activation=activation,
-                    output_init=output_init,
-                    direct_forces=True,
-                    scale_file=scale_file,
-                    name=f"OutBlock_{i}",
-                )
-            )
-
-        self.out_blocks = torch.nn.ModuleList(out_blocks)
         self.int_blocks = torch.nn.ModuleList(int_blocks)
+
+        num_vector_fields = 0 if not hasattr(self,"vector_fields") else self.vector_fields.triplets_dim
+        if self.output_block:
+            out_blocks = []
+            for i in range(num_blocks + 1):
+                out_blocks.append(
+                    OutputBlock(
+                        emb_size_atom=emb_size_atom,
+                        emb_size_edge=emb_size_edge,
+                        emb_size_trip=emb_size_trip,
+                        emb_size_rbf=emb_size_rbf,
+                        emb_size_cbf=emb_size_cbf,
+                        nHidden=num_atom,
+                        num_targets=energy_targets,
+                        num_vector_fields=num_vector_fields,
+                        activation=activation,
+                        output_init=output_init,
+                        direct_forces=True,
+                        scale_file=scale_file,
+                        name=f"OutBlock_{i}",
+                    )
+                )
+
+            self.out_blocks = torch.nn.ModuleList(out_blocks)
 
         self.shared_parameters = [
             (self.mlp_rbf3, self.num_blocks),
@@ -255,40 +273,17 @@ class GemsNetT(torch.nn.Module):
         ]
 
     def forward(
-        self,
-        cell: torch.FloatTensor,
-        x: torch.FloatTensor,
-        z: torch.LongTensor,
-        num_atoms: torch.LongTensor,
+        self, z: Union[torch.LongTensor, torch.FloatTensor], geometry: Geometry
     ):
-        """
-        args:
-            z: (N_cryst, num_latent)
-            frac_coords: (N_atoms, 3)
-            atom_types: (N_atoms, ), need to use atomic number e.g. H = 1
-            num_atoms: (N_cryst,)
-            lengths: (N_cryst, 3)
-            angles: (N_cryst, 3)
-        returns:
-            atom_frac_coords: (N_atoms, 3)
-            atom_types: (N_atoms, MAX_ATOMIC_NUM)
-        """
-
-        geometry = Geometry(
-            cell,
-            num_atoms,
-            x,
-            knn=self.knn,
-            triplets=False,
-            symetric=True,
-            compute_reverse_idx=True,
-        )
-
+        cell = geometry.cell
+        x = geometry.x
+        num_atoms = geometry.num_atoms
         batch = geometry.batch
         idx_s = geometry.edges.src
         idx_t = geometry.edges.dst
         D_st = geometry.edges_r_ij
         V_st = -geometry.edges_v_ij / geometry.edges_r_ij[:, None]
+        U_st = -geometry.edges_e_ij / geometry.edges_r_ij[:, None]
         id_swap = geometry.edges.reverse_idx
 
         num_edges = scatter_add(
@@ -308,10 +303,8 @@ class GemsNetT(torch.nn.Module):
 
         # Embedding block
         h = self.atom_emb(z)
-        # Merge z and atom embedding
 
-        # (nAtoms, emb_size_atom)
-        m = self.edge_emb(h, rbf, idx_s, idx_t)  # (nEdges, emb_size_edge)
+        m = self.edge_emb(h, rbf, idx_s, idx_t)
 
         rbf3 = self.mlp_rbf3(rbf)
         cbf3 = self.mlp_cbf3(rad_cbf3, sbf3)
@@ -320,13 +313,12 @@ class GemsNetT(torch.nn.Module):
         rbf_out = self.mlp_rbf_out(rbf)
         cbf_out = self.mlp_cbf_out(sbf3)
 
-        E_t, F_st, S_st = self.out_blocks[0](
-            h, m, rbf_out, cbf_out, idx_t, id3_ba, id3_ca
-        )
-        # (nAtoms, num_targets), (nEdges, num_targets)
+        if self.output_block:
+            E_t, F_st, S_st = self.out_blocks[0](
+                h, m, rbf_out, cbf_out, idx_t, id3_ba, id3_ca
+            )
 
         for i in range(self.num_blocks):
-            # Interaction block
             h, m = self.int_blocks[i](
                 h=h,
                 m=m,
@@ -338,81 +330,67 @@ class GemsNetT(torch.nn.Module):
                 rbf_h=rbf_h,
                 idx_s=idx_s,
                 idx_t=idx_t,
-            )  # (nAtoms, emb_size_atom), (nEdges, emb_size_edge)
-
-            E, F, S = self.out_blocks[i + 1](
-                h, m, rbf_out, cbf_out, idx_t, id3_ba, id3_ca
             )
-            # (nAtoms, num_targets), (nEdges, num_targets)
-            E_t += E
-            F_st += F
-            S_st += S
 
-        nMolecules = torch.max(batch) + 1
+            if self.output_block:
+                E, F, S = self.out_blocks[i + 1](
+                    h, m, rbf_out, cbf_out, idx_t, id3_ba, id3_ca
+                )
+                E_t += E
+                F_st += F
+                S_st += S
 
-        # ========================== ENERGY ==========================
-        # always use mean aggregation
-        E_t = scatter(
-            E_t, batch, dim=0, dim_size=nMolecules, reduce="mean"
-        )  # (nMolecules, num_targets)
-        # if predict forces, there should be only 1 energy
+        results = [h]
 
-        # ========================== FORCES ==========================
-        # map forces in edge directions
-        F_st_vec = F_st[:, :, None] * V_st[:, None, :]
-        # (nEdges, num_targets, 3)
-        F_t = scatter(
-            F_st_vec,
-            idx_t,
-            dim=0,
-            dim_size=num_atoms.sum(),
-            reduce="add",
-        )  # (nAtoms, num_targets, 3)
-        F_t = F_t.squeeze(1)  # (nAtoms, 3)
+        if self.compute_energy:
+            # ========================== ENERGY ==========================
+            E_t = scatter(E_t, batch, dim=0, dim_size=num_atoms.shape[0], reduce="mean")
 
-        F_t_in = torch.bmm(cell.inverse()[batch].detach(), F_t.unsqueeze(2)).squeeze(2)
+            results.append(E_t)
 
-        # ========================== STRESS ==========================
-        batch_triplets = batch[idx_s[id3_ba]]
+        if self.compute_forces:
+            # ========================== FORCES ==========================
+            F_st_vec = F_st[:, :, None] * U_st[:, None, :]
 
-        # e_ij = x[idx_s[id3_ba]] - x[idx_t[id3_ba]] + offset[id3_ba]
-        # e_ik = x[idx_s[id3_ca]] - x[idx_t[id3_ca]] + offset[id3_ca]
-        e_ij = geometry.edges_e_ij[id3_ba]
-        e_ik = geometry.edges_e_ij[id3_ca]
+            F_t = scatter(
+                F_st_vec,
+                idx_t,
+                dim=0,
+                dim_size=num_atoms.sum(),
+                reduce="add",
+            )
+            F_t = F_t.squeeze(1)
 
-        """
-        v_ij = torch.bmm(cell[batch_triplets], -e_ij.unsqueeze(2)).squeeze(2)
-        v_ik = torch.bmm(cell[batch_triplets], -e_ik.unsqueeze(2)).squeeze(2)
+            results.append((x + F_t) % 1.0)
+            results.append(F_t)
 
-        print(v_ij / D_st[id3_ba, None])
-        print(V_st[id3_ba])
+        if self.compute_stress:
+            # ========================== STRESS ==========================
+            batch_triplets = batch[idx_s[id3_ba]]
 
-        print((V_st[id3_ba] - v_ij / D_st[id3_ba, None]).abs().max())
-        print((V_st[id3_ca] - v_ik / D_st[id3_ca, None]).abs().max())
-        """
+            e_ij = geometry.edges_e_ij[id3_ba]
+            e_ik = geometry.edges_e_ij[id3_ca]
 
-        vector_fields = self.vector_fields(cell, batch_triplets, e_ij, e_ik)
-        filter_nan = ~(
-            (vector_fields != vector_fields).view(vector_fields.shape[0], -1).any(dim=1)
-        )
+            vector_fields = self.vector_fields(cell, batch_triplets, e_ij, e_ik)
+            filter_nan = ~(
+                (vector_fields != vector_fields)
+                .view(vector_fields.shape[0], -1)
+                .any(dim=1)
+            )
 
-        batch_triplets = batch_triplets[filter_nan]
-        fields = (S_st[filter_nan, :, None, None] * vector_fields[filter_nan]).sum(
-            dim=1
-        )
-        I = torch.eye(3, 3, device=cell.device)[None]
-        S_t = I + scatter(
-            fields, batch_triplets, dim=0, dim_size=cell.shape[0], reduce="mean"
-        )  # 1st order approx of matrix exp
-        cell_prime = torch.bmm(S_t, cell)
+            batch_triplets = batch_triplets[filter_nan]
+            fields = (S_st[filter_nan, :, None, None] * vector_fields[filter_nan]).sum(
+                dim=1
+            )
+            I = torch.eye(3, 3, device=cell.device)[None]
+            S_t = I + scatter(
+                fields, batch_triplets, dim=0, dim_size=cell.shape[0], reduce="mean"
+            )  # 1st order approx of matrix exp
+            # cell_prime = torch.bmm(S_t, cell)
 
-        return (
-            (x + F_t_in) % 1.0,
-            F_t_in,
-            h,
-            cell_prime,
-            S_t,
-        )  # (nMolecules, num_targets), (nAtoms, 3)
+            results.append(S_t)
+
+        return tuple(results)
 
     @property
     def num_params(self):
