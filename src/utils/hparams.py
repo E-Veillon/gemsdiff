@@ -5,7 +5,7 @@ import json
 @dataclass
 class Hparams:
     batch_size: int = 128
-    epochs: int = 64
+    epochs: int = 512
 
     lr: float = 1e-3
     beta1: float = 0.9
@@ -21,7 +21,7 @@ class Hparams:
 
     model: str = "vae"
 
-    layers: int = 4
+    layers: int = 3
 
     diffusion_steps: int = 1000
 

@@ -58,6 +58,155 @@ def get_dataloader(path: str, dataset: str, batch_size: int):
     return loader_train, loader_valid, loader_test
 
 
+@torch.no_grad()
+def compute_metrics(model, dataloader, desc_bar):
+    list_losses = []
+    list_losses_pos = []
+    list_losses_lat = []
+
+    list_t = []
+    list_rho = []
+    list_rho_pred = []
+    list_rho_t = []
+    list_x = []
+    list_x_pred = []
+    list_x_t = []
+    list_num_atoms = []
+
+    step = 32
+    N = model.diffusion_steps // step
+    t = torch.arange(0, model.diffusion_steps, step)
+    size = t.shape[0]
+    t_idx = torch.arange(0, size)
+    t = t.repeat(N + 1).to(device)
+    t_idx = t_idx.repeat(N + 1)
+
+    for batch in tqdm.tqdm(dataloader, leave=False, position=1, desc=desc_bar):
+        batch = batch.to(device)
+
+        (
+            loss,
+            loss_pos,
+            loss_lattice,
+            rho_t,
+            x_t,
+            pred_rho,
+            pred_x,
+        ) = model.get_loss(
+            batch.cell,
+            batch.pos,
+            batch.z,
+            batch.num_atoms,
+            t=t[: batch.num_atoms.shape[0]],
+            return_data=True,
+        )
+
+        list_t.append(t_idx[: batch.num_atoms.shape[0]])
+        list_rho.append(batch.cell)
+        list_rho_pred.append(pred_rho)
+        list_rho_t.append(rho_t)
+        list_x.append(batch.pos)
+        list_x_pred.append(pred_x)
+        list_x_t.append(x_t)
+        list_num_atoms.append(batch.num_atoms)
+
+        list_losses.append(loss.item())
+        list_losses_pos.append(loss_pos.item())
+        list_losses_lat.append(loss_lattice.item())
+
+    loss = {
+        "loss": torch.tensor(losses).mean().item(),
+        "pos": torch.tensor(losses_pos).mean().item(),
+        "lattice": torch.tensor(losses_lat).mean().item(),
+    }
+
+    list_t = torch.cat(list_t, dim=0)
+    list_rho = torch.cat(list_rho, dim=0)
+    list_rho_pred = torch.cat(list_rho_pred, dim=0)
+    list_rho_t = torch.cat(list_rho_t, dim=0)
+    list_x = torch.cat(list_x, dim=0)
+    list_x_pred = torch.cat(list_x_pred, dim=0)
+    list_x_t = torch.cat(list_x_t, dim=0)
+    list_num_atoms = torch.cat(list_num_atoms, dim=0)
+
+    metrics = get_metrics(
+        list_rho,
+        list_rho_pred,
+        list_x,
+        list_x_pred,
+        list_num_atoms,
+        by_structure=True,
+    )
+    metrics_gt = get_metrics(
+        list_rho,
+        list_rho_t,
+        list_x,
+        list_x_t,
+        list_num_atoms,
+        by_structure=True,
+    )
+
+    metrics["mae_pos_by_t"] = scatter_mean(
+        metrics["mae_pos"], list_t, dim=0, dim_size=size
+    )
+    metrics["mae_lengths_by_t"] = scatter_mean(
+        metrics["mae_lengths"].mean(dim=1), list_t, dim=0, dim_size=size
+    )
+    metrics["mae_angles_by_t"] = scatter_mean(
+        metrics["mae_angles"].mean(dim=1), list_t, dim=0, dim_size=size
+    )
+
+    metrics_gt["mae_pos_by_t"] = scatter_mean(
+        metrics_gt["mae_pos"], list_t, dim=0, dim_size=size
+    )
+    metrics_gt["mae_lengths_by_t"] = scatter_mean(
+        metrics_gt["mae_lengths"].mean(dim=1), list_t, dim=0, dim_size=size
+    )
+    metrics_gt["mae_angles_by_t"] = scatter_mean(
+        metrics_gt["mae_angles"].mean(dim=1), list_t, dim=0, dim_size=size
+    )
+
+    t = torch.arange(0, metrics["mae_pos_by_t"].shape[0]) * step
+
+    metrics["t"] = t
+    metrics["mae_pos"] = metrics["mae_pos"]
+    metrics["mae_lengths"] = metrics["mae_lengths"]
+    metrics["mae_angles"] = metrics["mae_angles"]
+
+    metrics_gt["t"] = t
+    metrics_gt["mae_pos"] = metrics_gt["mae_pos"]
+    metrics_gt["mae_lengths"] = metrics_gt["mae_lengths"]
+    metrics_gt["mae_angles"] = metrics_gt["mae_angles"]
+
+    return loss, metrics, metrics_gt
+
+
+def add_tensorboard(writer, loss, metrics, metrics_gt, path, batch_idx):
+    plt.scatter(metrics["t"], metrics["mae_pos_by_t"], label="gnn")
+    plt.scatter(metrics_gt["t"], metrics_gt["mae_pos_by_t"], label="no action")
+    plt.legend()
+    writer.add_figure(f"{path}/mae_pos", plt.gcf(), batch_idx)
+    plt.close()
+    plt.scatter(metrics["t"], metrics["mae_lengths_by_t"], label="gnn")
+    plt.scatter(metrics_gt["t"], metrics_gt["mae_lengths_by_t"], label="no action")
+    plt.legend()
+    writer.add_figure(f"{path}/mae_lengths", plt.gcf(), batch_idx)
+    plt.close()
+    plt.scatter(metrics["t"], metrics["mae_angles_by_t"], label="gnn")
+    plt.scatter(metrics_gt["t"], metrics_gt["mae_angles_by_t"], label="no action")
+    plt.legend()
+    writer.add_figure(f"{path}/mae_angles", plt.gcf(), batch_idx)
+    plt.close()
+
+    writer.add_scalar(f"{path}/mae_pos", metrics["mae_pos"].mean(), batch_idx)
+    writer.add_scalar(f"{path}/mae_lengths", metrics["mae_lengths"].mean(), batch_idx)
+    writer.add_scalar(f"{path}/mae_angles", metrics["mae_angles"].mean(), batch_idx)
+
+    writer.add_scalar(f"{path}/loss", loss["loss"], batch_idx)
+    writer.add_scalar(f"{path}/loss_pos", loss["pos"], batch_idx)
+    writer.add_scalar(f"{path}/loss_lattice", loss["lattice"], batch_idx)
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -169,287 +318,49 @@ if __name__ == "__main__":
 
         pd.DataFrame(logs).set_index("batch").to_csv(os.path.join(log_dir, "loss.csv"))
 
-        with torch.no_grad():
-            valid_losses = []
-            valid_losses_pos = []
-            valid_losses_lat = []
+        loss, metrics, metrics_gt = compute_metrics(model, loader_valid, "validation")
+        add_tensorboard(writer, loss, metrics, metrics_gt, "valid", batch_idx)
 
-            valid_t = []
-            valid_rho = []
-            valid_rho_pred = []
-            valid_rho_t = []
-            valid_x = []
-            valid_x_pred = []
-            valid_x_t = []
-            valid_num_atoms = []
+    loss, metrics, metrics_gt = compute_metrics(model, loader_test, "test")
+    add_tensorboard(writer, loss, metrics, metrics_gt, "test", batch_idx)
 
-            step = 32
-            N = hparams.diffusion_steps // step
-            t = torch.arange(0, hparams.diffusion_steps, step)
-            size = t.shape[0]
-            t_idx = torch.arange(0, size)
-            t = t.repeat(N + 1).to(device)
-            t_idx = t_idx.repeat(N + 1)
+    metrics = {
+        "loss": loss["loss"],
+        "loss_pos": loss["pos"],
+        "loss_lattice": loss["lattice"],
+        "mae_pos": metrics["mae_pos"].mean().item(),
+        "mae_lengths": metrics["mae_lengths"].mean().item(),
+        "mae_angles": metrics["mae_angles"].mean().item(),
+    }
 
-            for batch in tqdm.tqdm(
-                loader_valid, leave=False, position=1, desc="validation"
-            ):
-                batch = batch.to(device)
+    with open(os.path.join(log_dir, "metrics.json"), "w") as fp:
+        json.dump(metrics, fp, indent=4)
 
-                (
-                    loss,
-                    loss_pos,
-                    loss_lattice,
-                    rho_t,
-                    x_t,
-                    pred_rho,
-                    pred_x,
-                ) = model.get_loss(
-                    batch.cell,
-                    batch.pos,
-                    batch.z,
-                    batch.num_atoms,
-                    t=t[: batch.num_atoms.shape[0]],
-                    return_data=True,
-                )
+    print("\nmetrics:")
+    print(json.dumps(metrics, indent=4))
 
-                valid_t.append(t_idx[: batch.num_atoms.shape[0]])
-                valid_rho.append(batch.cell)
-                valid_rho_pred.append(pred_rho)
-                valid_rho_t.append(rho_t)
-                valid_x.append(batch.pos)
-                valid_x_pred.append(pred_x)
-                valid_x_t.append(x_t)
-                valid_num_atoms.append(batch.num_atoms)
+    writer.add_hparams(hparams.dict(), metrics)
 
-                valid_losses.append(loss.item())
-                valid_losses_pos.append(loss_pos.item())
-                valid_losses_lat.append(loss_lattice.item())
+    for batch in loader_test:
+        batch = batch.to(device)
 
-            losses = torch.tensor(losses).mean().item()
-            losses_pos = torch.tensor(losses_pos).mean().item()
-            losses_lat = torch.tensor(losses_lat).mean().item()
+        limit_batch_size = 16
+        batch.num_atoms = batch.num_atoms[:limit_batch_size]
+        batch.cell = batch.cell[:limit_batch_size]
+        max_atoms = batch.num_atoms.sum()
+        batch.pos = batch.pos[:max_atoms]
+        batch.z = batch.z[:max_atoms]
+        break
 
-            if losses < best_val:
-                best_val = losses
-                torch.save(model.state_dict(), os.path.join(log_dir, "best.pt"))
+    rho, x = model.sampling(batch.z, batch.num_atoms, return_history=True, verbose=True)
 
-            writer.add_scalar("valid/loss", losses, batch_idx)
-            writer.add_scalar("valid/loss_pos", losses_pos, batch_idx)
-            writer.add_scalar("valid/loss_lattice", losses_lat, batch_idx)
+    cif = make_cif(rho[-1], x[-1], batch.z, batch.num_atoms)
 
-            valid_t = torch.cat(valid_t, dim=0)
-            valid_rho = torch.cat(valid_rho, dim=0)
-            valid_rho_pred = torch.cat(valid_rho_pred, dim=0)
-            valid_rho_t = torch.cat(valid_rho_t, dim=0)
-            valid_x = torch.cat(valid_x, dim=0)
-            valid_x_pred = torch.cat(valid_x_pred, dim=0)
-            valid_x_t = torch.cat(valid_x_t, dim=0)
-            valid_num_atoms = torch.cat(valid_num_atoms, dim=0)
+    with open(os.path.join(log_dir, "sampling.cif"), "w") as fp:
+        fp.write(cif)
 
-            metrics = get_metrics(
-                valid_rho,
-                valid_rho_pred,
-                valid_x,
-                valid_x_pred,
-                valid_num_atoms,
-                by_structure=True,
-            )
-            metrics_gt = get_metrics(
-                valid_rho,
-                valid_rho_t,
-                valid_x,
-                valid_x_t,
-                valid_num_atoms,
-                by_structure=True,
-            )
+    video_tensor = make_video(rho, x, batch.z, batch.num_atoms, step=32)
 
-            mae_pos_by_t = scatter_mean(
-                metrics["mae_pos"], valid_t, dim=0, dim_size=size
-            )
-            mae_pos_by_t_gt = scatter_mean(
-                metrics_gt["mae_pos"], valid_t, dim=0, dim_size=size
-            )
-            mae_lengths_by_t = scatter_mean(
-                metrics["mae_lengths"].mean(dim=1), valid_t, dim=0, dim_size=size
-            )
-            mae_lengths_by_t_gt = scatter_mean(
-                metrics_gt["mae_lengths"].mean(dim=1), valid_t, dim=0, dim_size=size
-            )
-            mae_angles_by_t = scatter_mean(
-                metrics["mae_angles"].mean(dim=1), valid_t, dim=0, dim_size=size
-            )
-            mae_angles_by_t_gt = scatter_mean(
-                metrics_gt["mae_angles"].mean(dim=1), valid_t, dim=0, dim_size=size
-            )
-            t_range = torch.arange(0, mae_pos_by_t.shape[0]) * step
-
-            plt.scatter(t_range, mae_pos_by_t, label="gnn")
-            plt.scatter(t_range, mae_pos_by_t_gt, label="no action")
-            plt.legend()
-            writer.add_figure("valid/mae_pos", plt.gcf(), batch_idx)
-            plt.close()
-            plt.scatter(t_range, mae_lengths_by_t, label="gnn")
-            plt.scatter(t_range, mae_lengths_by_t_gt, label="no action")
-            plt.legend()
-            writer.add_figure("valid/mae_lengths", plt.gcf(), batch_idx)
-            plt.close()
-            plt.scatter(t_range, mae_angles_by_t, label="gnn")
-            plt.scatter(t_range, mae_angles_by_t_gt, label="no action")
-            plt.legend()
-            writer.add_figure("valid/mae_angles", plt.gcf(), batch_idx)
-            plt.close()
-
-            writer.add_scalar("valid/mae_pos", metrics["mae_pos"].mean(), batch_idx)
-            writer.add_scalar(
-                "valid/mae_lengths", metrics["mae_lengths"].mean(), batch_idx
-            )
-            writer.add_scalar(
-                "valid/mae_angles", metrics["mae_angles"].mean(), batch_idx
-            )
-
-    with torch.no_grad():
-        for batch in loader_test:
-            batch = batch.to(device)
-
-            limit_batch_size = 16
-            batch.num_atoms = batch.num_atoms[:limit_batch_size]
-            batch.cell = batch.cell[:limit_batch_size]
-            max_atoms = batch.num_atoms.sum()
-            batch.pos = batch.pos[:max_atoms]
-            batch.z = batch.z[:max_atoms]
-            break
-
-        rho, x = model.sampling(
-            batch.z, batch.num_atoms, return_history=True, verbose=True
-        )
-
-        cif = make_cif(rho[-1], x[-1], batch.z, batch.num_atoms)
-
-        with open(os.path.join(log_dir, "sampling.cif"), "w") as fp:
-            fp.write(cif)
-
-        video_tensor = make_video(rho, x, batch.z, batch.num_atoms, step=32)
-
-        writer.add_video("sampling", video_tensor)
-
-        test_losses = []
-        test_losses_pos = []
-        test_losses_lat = []
-
-        test_t = []
-        test_rho = []
-        test_rho_pred = []
-        test_x = []
-        test_x_pred = []
-        test_num_atoms = []
-
-        step = 32
-        N = hparams.diffusion_steps // step
-        t = torch.arange(0, hparams.diffusion_steps, step).repeat(N + 1).to(device)
-        t_idx = torch.arange(0, N).repeat(N + 1)
-
-        for batch in tqdm.tqdm(loader_test, leave=False, position=1, desc="test"):
-            batch = batch.to(device)
-
-            loss, loss_pos, loss_lattice, _, _, pred_rho, pred_x = model.get_loss(
-                batch.cell,
-                batch.pos,
-                batch.z,
-                batch.num_atoms,
-                t=t[: batch.num_atoms.shape[0]],
-                return_data=True,
-            )
-
-            test_t.append(t_idx[: batch.num_atoms.shape[0]])
-            test_rho.append(batch.cell)
-            test_rho_pred.append(pred_rho)
-            test_x.append(batch.pos)
-            test_x_pred.append(pred_x)
-            test_num_atoms.append(batch.num_atoms)
-
-            test_losses.append(loss.item())
-            test_losses_pos.append(loss_pos.item())
-            test_losses_lat.append(loss_lattice.item())
-
-        losses = torch.tensor(losses).mean().item()
-        losses_pos = torch.tensor(losses_pos).mean().item()
-        losses_lat = torch.tensor(losses_lat).mean().item()
-
-        if losses < best_val:
-            best_val = losses
-            torch.save(model.state_dict(), os.path.join(log_dir, "best.pt"))
-
-        writer.add_scalar("test/loss", losses, batch_idx)
-        writer.add_scalar("test/loss_pos", losses_pos, batch_idx)
-        writer.add_scalar("test/loss_lattice", losses_lat, batch_idx)
-
-        test_t = torch.cat(test_t, dim=0)
-        test_rho = torch.cat(test_rho, dim=0)
-        test_rho_pred = torch.cat(test_rho_pred, dim=0)
-        test_x = torch.cat(test_x, dim=0)
-        test_x_pred = torch.cat(test_x_pred, dim=0)
-        test_num_atoms = torch.cat(test_num_atoms, dim=0)
-
-        metrics = get_metrics(
-            test_rho,
-            test_rho_pred,
-            test_x,
-            test_x_pred,
-            test_num_atoms,
-            by_structure=True,
-        )
-
-        mae_pos_by_t = scatter_mean(metrics["mae_pos"], test_t, dim=0, dim_size=N)
-        mae_lengths_by_t = scatter_mean(
-            metrics["mae_lengths"], test_t, dim=0, dim_size=N
-        ).mean(dim=1)
-        mae_angles_by_t = scatter_mean(
-            metrics["mae_angles"], test_t, dim=0, dim_size=N
-        ).mean(dim=1)
-        t_range = torch.arange(0, mae_pos_by_t.shape[0]) * step
-
-        plt.scatter(t_range, mae_pos_by_t)
-        writer.add_figure("test/mae_pos", plt.gcf(), batch_idx)
-        plt.close()
-        plt.scatter(t_range, mae_lengths_by_t)
-        writer.add_figure("test/mae_lengths", plt.gcf(), batch_idx)
-        plt.close()
-        plt.scatter(t_range, mae_angles_by_t)
-        writer.add_figure("test/mae_angles", plt.gcf(), batch_idx)
-        plt.close()
-
-        writer.add_scalar("test/mae_pos", metrics["mae_pos"].mean(), batch_idx)
-        writer.add_scalar("test/mae_lengths", metrics["mae_lengths"].mean(), batch_idx)
-        writer.add_scalar("test/mae_angles", metrics["mae_angles"].mean(), batch_idx)
-
-        metrics = {
-            "loss": losses,
-            "loss_pos": losses_pos,
-            "loss_lattice": losses_lat,
-            **{
-                k: v.item()
-                for k, v in get_metrics(
-                    test_rho, test_rho_pred, test_x, test_x_pred, test_num_atoms
-                ).items()
-            },
-        }
-
-        with open(os.path.join(log_dir, "metrics.json"), "w") as fp:
-            json.dump(metrics, fp, indent=4)
-
-        print("\nmetrics:")
-        print(json.dumps(metrics, indent=4))
-        writer.add_scalar("test/loss", losses, batch_idx)
-        writer.add_scalar("test/loss_pos", losses_pos, batch_idx)
-        writer.add_scalar("test/loss_lattice", losses_lat, batch_idx)
-
-        writer.add_scalar("test/mae_pos", metrics["mae_pos"], batch_idx)
-        writer.add_scalar("test/mae_lengths", metrics["mae_lengths"], batch_idx)
-        writer.add_scalar("test/mae_angles", metrics["mae_angles"], batch_idx)
-
-        writer.add_hparams(hparams.dict(), metrics)
-
-        # save_snapshot(batch, model, os.path.join(log_dir, "snapshot.png"),noise_pos=noise_pos)
+    writer.add_video("sampling", video_tensor)
 
     writer.close()
