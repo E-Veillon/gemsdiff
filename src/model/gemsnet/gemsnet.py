@@ -241,7 +241,9 @@ class GemsNetT(torch.nn.Module):
 
         self.int_blocks = torch.nn.ModuleList(int_blocks)
 
-        num_vector_fields = 0 if not hasattr(self,"vector_fields") else self.vector_fields.triplets_dim
+        num_vector_fields = (
+            0 if not hasattr(self, "vector_fields") else self.vector_fields.triplets_dim
+        )
         if self.output_block:
             out_blocks = []
             for i in range(num_blocks + 1):
@@ -273,7 +275,7 @@ class GemsNetT(torch.nn.Module):
         ]
 
     def forward(
-        self, z: Union[torch.LongTensor, torch.FloatTensor], geometry: Geometry
+        self, z: torch.LongTensor, geometry: Geometry, emb: torch.FloatTensor = None
     ):
         cell = geometry.cell
         x = geometry.x
@@ -302,7 +304,10 @@ class GemsNetT(torch.nn.Module):
         rbf = self.radial_basis(D_st)
 
         # Embedding block
-        h = self.atom_emb(z)
+        if emb is None:
+            h = self.atom_emb(z)
+        else:
+            h = self.atom_emb(z) + emb[geometry.batch]
 
         m = self.edge_emb(h, rbf, idx_s, idx_t)
 

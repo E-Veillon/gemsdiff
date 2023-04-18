@@ -13,6 +13,7 @@ def get_metrics(
     x: torch.FloatTensor,
     x_prime: torch.FloatTensor,
     num_atoms: torch.LongTensor,
+    by_structure: bool = False,
 ) -> Dict[str, torch.FloatTensor]:
     rho = rho.cpu()
     rho_prime = rho_prime.cpu()
@@ -67,15 +68,27 @@ def get_metrics(
 
     min_idx = (euc_x_prime[:, None] - euc_x).norm(dim=2).argmin(dim=1)
 
-    mae_pos = (x_prime - (x + offset[min_idx])).norm(dim=1).mean().item()
+    error_pos = (x_prime - (x + offset[min_idx])).norm(dim=1)
+    if by_structure:
+        mae_pos = scatter_mean(
+            error_pos, batch, dim=0, dim_size=num_atoms.shape[0]
+        ).detach()
+    else:
+        mae_pos = error_pos.mean().detach()
 
     rho_lengths, rho_angles = LatticeScaler.get_lattices_parameters(rho)
     rho_prime_lengths, rho_prime_angles = LatticeScaler.get_lattices_parameters(
         rho_prime
     )
 
-    mae_lengths = (rho_lengths - rho_prime_lengths).abs().mean().item()
-    mae_angles = (rho_angles - rho_prime_angles).abs().mean().item()
+    error_lengths = (rho_lengths - rho_prime_lengths).abs()
+    error_angles = (rho_angles - rho_prime_angles).abs()
+    if by_structure:
+        mae_lengths = error_lengths.detach()
+        mae_angles = error_angles.detach()
+    else:
+        mae_lengths = error_lengths.mean().detach()
+        mae_angles = error_angles.mean().detach()
 
     return {
         "mae_pos": mae_pos,

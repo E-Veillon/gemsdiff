@@ -16,19 +16,20 @@ class GemsNetVAE(nn.Module):
         num_blocks: int,
         vector_fields: dict,
         global_features: int = None,
-        emb_size_atom:int = 128
+        emb_size_atom: int = 128,
     ):
         super().__init__()
 
         if global_features is None:
             global_features = features
-        
+
         self.knn = knn
 
         # energy_targets
         self.encoder = GemsNetT(
             features,
-            emb_size_atom = emb_size_atom,
+            num_blocks=num_blocks,
+            emb_size_atom=emb_size_atom,
             energy_targets=global_features,
             compute_energy=True,
             compute_forces=False,
@@ -36,26 +37,23 @@ class GemsNetVAE(nn.Module):
         )
         self.decoder = GemsNetT(
             features,
-            z_input=emb_size_atom+global_features,
+            num_blocks=num_blocks,
+            z_input=emb_size_atom + global_features,
             compute_energy=False,
             compute_forces=True,
             compute_stress=True,
             vector_fields=vector_fields,
         )
-        
+
     def forward(
         self,
         cell: torch.FloatTensor,
         x: torch.FloatTensor,
         z: torch.LongTensor,
         num_atoms: torch.LongTensor,
+        emb: torch.FloatTensor = None
     ) -> torch.FloatTensor:
-        eye = (
-            torch.eye(3, device=cell.device)
-            .unsqueeze(0)
-            .repeat(cell.shape[0], 1, 1)
-        )
-        
+        eye = torch.eye(3, device=cell.device).unsqueeze(0).repeat(cell.shape[0], 1, 1)
 
         geometry = Geometry(
             cell,
@@ -67,16 +65,9 @@ class GemsNetVAE(nn.Module):
             compute_reverse_idx=True,
         )
 
-        h, h_mat = self.encoder(z, geometry)
+        h, h_mat = self.encoder(z, geometry,emb)
 
         h_atoms = torch.cat((h, h_mat[geometry.batch]), dim=1)
-
-        """
-        geometry.cell = (
-            torch.eye(3, 3, device=cell.device).unsqueeze(0).repeat(cell.shape[0], 1, 1)
-        )
-        geometry.update_vectors()
-        """
 
         geometry = Geometry(
             eye,

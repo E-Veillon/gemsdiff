@@ -21,9 +21,8 @@ import datetime
 from src.utils.scaler import LatticeScaler
 from src.utils.data import MP20, Carbon24, Perov5
 from src.utils.hparams import Hparams
-from src.utils.snapshot import save_snapshot
 from src.utils.metrics import get_metrics
-from src.model.gemsnet import GemsNetDenoiser, GemsNetVAE
+from src.model.gemsnet import GemsNetDiffusion
 from src.loss import OptimalTrajLoss, LatticeParametersLoss
 
 
@@ -57,25 +56,6 @@ def get_dataloader(path: str, dataset: str, batch_size: int):
     return loader_train, loader_valid, loader_test
 
 
-def build_model(hparams: Hparams) -> nn.Module:
-    assert hparams.model in ["gemsnet", "vae"]
-
-    if hparams.model == "gemsnet":
-        return GemsNetDenoiser(
-            hparams.features,
-            knn=hparams.knn,
-            num_blocks=hparams.layers,
-            vector_fields=hparams.vector_fields,
-        )
-    if hparams.model == "vae":
-        return GemsNetVAE(
-            hparams.features,
-            knn=hparams.knn,
-            num_blocks=hparams.layers,
-            vector_fields=hparams.vector_fields,
-        )
-
-
 if __name__ == "__main__":
     import argparse
 
@@ -83,7 +63,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="train denoising model")
     parser.add_argument("--hparams", "-H", default=None, help="json file")
-    parser.add_argument("--logs", "-l", default="./runs/denoising")
+    parser.add_argument("--logs", "-l", default="./runs/diffusion")
     parser.add_argument("--dataset", "-D", default="mp-20")
     parser.add_argument("--dataset-path", "-dp", default="./data")
     parser.add_argument("--device", "-d", default="cuda")
@@ -93,8 +73,6 @@ if __name__ == "__main__":
 
     torch.set_num_threads(args.threads)
     torch.set_num_interop_threads(args.threads)
-
-    noise_pos = 0.05
 
     # run name
     tday = datetime.datetime.now()
@@ -129,16 +107,34 @@ if __name__ == "__main__":
     scaler = LatticeScaler().to(device)
     scaler.fit(loader_train)
 
-    model = build_model(hparams).to(device)
-
-    loss_pos_fn = OptimalTrajLoss(center=True, euclidian=True, distance="l1").to(device)
-    loss_lattice_fn = LatticeParametersLoss(lattice_scaler=scaler).to(device)
+    model = GemsNetDiffusion(
+        lattice_scaler=scaler,
+        features=hparams.features,
+        knn=hparams.knn,
+        num_blocks=hparams.layers,
+        vector_fields=hparams.vector_fields,
+    ).to(device)
 
     opt = optim.Adam(model.parameters(), lr=hparams.lr, betas=(hparams.beta1, 0.999))
 
     logs = {"batch": [], "loss": [], "loss_pos": [], "loss_lat": []}
 
     best_val = float("inf")
+
+    for batch in loader_train:
+        batch = batch.to(device)
+
+        limit_batch_size = 8
+        batch.num_atoms = batch.num_atoms[:limit_batch_size]
+        batch.cell = batch.cell[:limit_batch_size]
+        max_atoms = batch.num_atoms.sum()
+        batch.pos = batch.pos[:max_atoms]
+        batch.z = batch.z[:max_atoms]
+        break
+
+    rho, x = model.sampling(batch.z, batch.num_atoms, return_history=True, verbose=True)
+    print(rho.shape, x.shape)
+    exit(0)
 
     batch_idx = 0
     snapshot_idx = 0
@@ -152,48 +148,18 @@ if __name__ == "__main__":
 
             opt.zero_grad()
 
-            opti_traj = noise_pos * torch.randn_like(batch.pos)
-            opti_traj -= scatter_mean(
-                opti_traj, batch.batch, dim=0, dim_size=batch.cell.shape[0]
-            )[batch.batch]
-
-            if hparams.train_pos:
-                x_thild = (batch.pos + opti_traj) % 1.0
-            else:
-                x_thild = batch.pos
-
-            rho_thild = torch.bmm(
-                torch.matrix_exp(0.3 * torch.randn_like(batch.cell)), batch.cell
+            loss, loss_pos, loss_lat = model.get_loss(
+                batch.cell, batch.pos, batch.z, batch.num_atoms
             )
 
-            x_prime, x_traj, rho_prime = model.forward(
-                rho_thild, x_thild, batch.z, batch.num_atoms
-            )
-
-            loss_pos = loss_pos_fn(
-                batch.cell, batch.pos, x_thild, x_traj, batch.num_atoms
-            )
-            # loss_lat = loss_lattice_fn(rho_prime, batch.cell)
-            loss_lat = loss_lattice_fn(rho_prime, rho_thild)
-            if hparams.train_pos:
-                loss = loss_pos + loss_lat
-            else:
-                loss = loss_lat
             loss.backward()
-
-            metrics = get_metrics(
-                batch.cell, rho_prime, batch.pos, x_prime, batch.num_atoms
-            )
-
             torch.nn.utils.clip_grad_norm_(model.parameters(), hparams.grad_clipping)
             opt.step()
 
-            # loss_zero = loss_fn(batch.cell, batch.pos, x_thild, batch.num_atoms).item()
             losses.append(loss.item())
             losses_pos.append(loss_pos.item())
             losses_lat.append(loss_lat.item())
 
-            # it.set_description(f"loss: {loss.item():.3f}/{loss_zero:.3f}")
             it.set_description(
                 f"loss: {loss.item():.3f} atomic pos={loss_pos.item():.3f} lattice={loss_lat.item():.3f}"
             )
@@ -220,54 +186,57 @@ if __name__ == "__main__":
             valid_losses_pos = []
             valid_losses_lat = []
 
+            valid_t = []
             valid_rho = []
-            valid_rho_prime = []
+            valid_rho_pred = []
+            valid_rho_t = []
             valid_x = []
-            valid_x_prime = []
+            valid_x_pred = []
+            valid_x_t = []
             valid_num_atoms = []
+
+            step = 32
+            N = hparams.diffusion_steps // step
+            t = torch.arange(0, hparams.diffusion_steps, step)
+            size = t.shape[0]
+            t_idx = torch.arange(0, size)
+            t = t.repeat(N + 1).to(device)
+            t_idx = t_idx.repeat(N + 1)
 
             for batch in tqdm.tqdm(
                 loader_valid, leave=False, position=1, desc="validation"
             ):
                 batch = batch.to(device)
 
-                opti_traj = noise_pos * torch.randn_like(batch.pos)
-                opti_traj -= scatter_mean(
-                    opti_traj, batch.batch, dim=0, dim_size=batch.cell.shape[0]
-                )[batch.batch]
-
-                if hparams.train_pos:
-                    x_thild = (batch.pos + opti_traj) % 1.0
-                else:
-                    x_thild = batch.pos
-
-                rho_thild = torch.bmm(
-                    torch.matrix_exp(0.0 * torch.randn_like(batch.cell)), batch.cell
+                (
+                    loss,
+                    loss_pos,
+                    loss_lattice,
+                    rho_t,
+                    x_t,
+                    pred_rho,
+                    pred_x,
+                ) = model.get_loss(
+                    batch.cell,
+                    batch.pos,
+                    batch.z,
+                    batch.num_atoms,
+                    t=t[: batch.num_atoms.shape[0]],
+                    return_data=True,
                 )
 
-                x_prime, x_traj, rho_prime = model.forward(
-                    rho_thild, x_thild, batch.z, batch.num_atoms
-                )
-
-                loss_pos = loss_pos_fn(
-                    batch.cell, batch.pos, x_thild, x_traj, batch.num_atoms
-                )
-                # loss_lat = loss_lattice_fn(rho_prime, batch.cell)
-                loss_lat = loss_lattice_fn(rho_prime, rho_thild)
-                if hparams.train_pos:
-                    loss = loss_pos + loss_lat
-                else:
-                    loss = loss_lat
-
+                valid_t.append(t_idx[: batch.num_atoms.shape[0]])
                 valid_rho.append(batch.cell)
-                valid_rho_prime.append(rho_prime)
+                valid_rho_pred.append(pred_rho)
+                valid_rho_t.append(rho_t)
                 valid_x.append(batch.pos)
-                valid_x_prime.append(x_prime)
+                valid_x_pred.append(pred_x)
+                valid_x_t.append(x_t)
                 valid_num_atoms.append(batch.num_atoms)
 
                 valid_losses.append(loss.item())
                 valid_losses_pos.append(loss_pos.item())
-                valid_losses_lat.append(loss_lat.item())
+                valid_losses_lat.append(loss_lattice.item())
 
             losses = torch.tensor(losses).mean().item()
             losses_pos = torch.tensor(losses_pos).mean().item()
@@ -277,103 +246,181 @@ if __name__ == "__main__":
                 best_val = losses
                 torch.save(model.state_dict(), os.path.join(log_dir, "best.pt"))
 
-                snapshot_path = os.path.join(log_dir, f"snapshot")
-                os.makedirs(snapshot_path, exist_ok=True)
-                save_snapshot(
-                    batch, model, os.path.join(snapshot_path, f"{snapshot_idx}.png")
-                )
-                snapshot_idx += 1
-
             writer.add_scalar("valid/loss", losses, batch_idx)
             writer.add_scalar("valid/loss_pos", losses_pos, batch_idx)
             writer.add_scalar("valid/loss_lattice", losses_lat, batch_idx)
 
+            valid_t = torch.cat(valid_t, dim=0)
             valid_rho = torch.cat(valid_rho, dim=0)
-            valid_rho_prime = torch.cat(valid_rho_prime, dim=0)
+            valid_rho_pred = torch.cat(valid_rho_pred, dim=0)
+            valid_rho_t = torch.cat(valid_rho_t, dim=0)
             valid_x = torch.cat(valid_x, dim=0)
-            valid_x_prime = torch.cat(valid_x_prime, dim=0)
+            valid_x_pred = torch.cat(valid_x_pred, dim=0)
+            valid_x_t = torch.cat(valid_x_t, dim=0)
             valid_num_atoms = torch.cat(valid_num_atoms, dim=0)
 
             metrics = get_metrics(
-                valid_rho, valid_rho_prime, valid_x, valid_x_prime, valid_num_atoms
+                valid_rho,
+                valid_rho_pred,
+                valid_x,
+                valid_x_pred,
+                valid_num_atoms,
+                by_structure=True,
+            )
+            metrics_gt = get_metrics(
+                valid_rho,
+                valid_rho_t,
+                valid_x,
+                valid_x_t,
+                valid_num_atoms,
+                by_structure=True,
             )
 
-            writer.add_scalar("valid/mae_pos", metrics["mae_pos"], batch_idx)
-            writer.add_scalar("valid/mae_lengths", metrics["mae_lengths"], batch_idx)
-            writer.add_scalar("valid/mae_angles", metrics["mae_angles"], batch_idx)
+            mae_pos_by_t = scatter_mean(
+                metrics["mae_pos"], valid_t, dim=0, dim_size=size
+            )
+            mae_pos_by_t_gt = scatter_mean(
+                metrics_gt["mae_pos"], valid_t, dim=0, dim_size=size
+            )
+            mae_lengths_by_t = scatter_mean(
+                metrics["mae_lengths"].mean(dim=1), valid_t, dim=0, dim_size=size
+            )
+            mae_lengths_by_t_gt = scatter_mean(
+                metrics_gt["mae_lengths"].mean(dim=1), valid_t, dim=0, dim_size=size
+            )
+            mae_angles_by_t = scatter_mean(
+                metrics["mae_angles"].mean(dim=1), valid_t, dim=0, dim_size=size
+            )
+            mae_angles_by_t_gt = scatter_mean(
+                metrics_gt["mae_angles"].mean(dim=1), valid_t, dim=0, dim_size=size
+            )
+            t_range = torch.arange(0, mae_pos_by_t.shape[0]) * step
 
-            # save_snapshot(batch, model, os.path.join(log_dir, "snapshot.png"),noise_pos=noise_pos)
+            plt.scatter(t_range, mae_pos_by_t, label="gnn")
+            plt.scatter(t_range, mae_pos_by_t_gt, label="no action")
+            plt.legend()
+            writer.add_figure("valid/mae_pos", plt.gcf(), batch_idx)
+            plt.close()
+            plt.scatter(t_range, mae_lengths_by_t, label="gnn")
+            plt.scatter(t_range, mae_lengths_by_t_gt, label="no action")
+            plt.legend()
+            writer.add_figure("valid/mae_lengths", plt.gcf(), batch_idx)
+            plt.close()
+            plt.scatter(t_range, mae_angles_by_t, label="gnn")
+            plt.scatter(t_range, mae_angles_by_t_gt, label="no action")
+            plt.legend()
+            writer.add_figure("valid/mae_angles", plt.gcf(), batch_idx)
+            plt.close()
+
+            writer.add_scalar("valid/mae_pos", metrics["mae_pos"].mean(), batch_idx)
+            writer.add_scalar(
+                "valid/mae_lengths", metrics["mae_lengths"].mean(), batch_idx
+            )
+            writer.add_scalar(
+                "valid/mae_angles", metrics["mae_angles"].mean(), batch_idx
+            )
 
     with torch.no_grad():
         test_losses = []
         test_losses_pos = []
         test_losses_lat = []
 
+        test_t = []
         test_rho = []
-        test_rho_prime = []
+        test_rho_pred = []
         test_x = []
-        test_x_prime = []
+        test_x_pred = []
         test_num_atoms = []
 
-        for batch in tqdm.tqdm(loader_test, leave=False, position=1, desc="testing"):
+        step = 32
+        N = hparams.diffusion_steps // step
+        t = torch.arange(0, hparams.diffusion_steps, step).repeat(N + 1).to(device)
+        t_idx = torch.arange(0, N).repeat(N + 1)
+
+        for batch in tqdm.tqdm(loader_test, leave=False, position=1, desc="test"):
             batch = batch.to(device)
 
-            opti_traj = noise_pos * torch.randn_like(batch.pos)
-            opti_traj -= scatter_mean(
-                opti_traj, batch.batch, dim=0, dim_size=batch.cell.shape[0]
-            )[batch.batch]
-
-            if hparams.train_pos:
-                x_thild = (batch.pos + opti_traj) % 1.0
-            else:
-                x_thild = batch.pos
-
-            rho_thild = torch.bmm(
-                torch.matrix_exp(0.0 * torch.randn_like(batch.cell)), batch.cell
+            loss, loss_pos, loss_lattice, pred_rho, pred_x = model.get_loss(
+                batch.cell,
+                batch.pos,
+                batch.z,
+                batch.num_atoms,
+                t=t[: batch.num_atoms.shape[0]],
+                return_output=True,
             )
 
-            x_prime, x_traj, rho_prime = model.forward(
-                rho_thild, x_thild, batch.z, batch.num_atoms
-            )
-
-            loss_pos = loss_pos_fn(
-                batch.cell, batch.pos, x_thild, x_traj, batch.num_atoms
-            )
-            # loss_lat = loss_lattice_fn(rho_prime, batch.cell)
-            loss_lat = loss_lattice_fn(rho_prime, rho_thild)
-            if hparams.train_pos:
-                loss = loss_pos + loss_lat
-            else:
-                loss = loss_lat
-
+            test_t.append(t_idx[: batch.num_atoms.shape[0]])
             test_rho.append(batch.cell)
-            # test_rho_prime.append(rho_prime)
-            test_rho_prime.append(rho_thild)
+            test_rho_pred.append(pred_rho)
             test_x.append(batch.pos)
-            test_x_prime.append(x_prime)
+            test_x_pred.append(pred_x)
             test_num_atoms.append(batch.num_atoms)
 
             test_losses.append(loss.item())
             test_losses_pos.append(loss_pos.item())
-            test_losses_lat.append(loss_lat.item())
+            test_losses_lat.append(loss_lattice.item())
 
         losses = torch.tensor(losses).mean().item()
         losses_pos = torch.tensor(losses_pos).mean().item()
         losses_lat = torch.tensor(losses_lat).mean().item()
 
+        if losses < best_val:
+            best_val = losses
+            torch.save(model.state_dict(), os.path.join(log_dir, "best.pt"))
+
+        writer.add_scalar("test/loss", losses, batch_idx)
+        writer.add_scalar("test/loss_pos", losses_pos, batch_idx)
+        writer.add_scalar("test/loss_lattice", losses_lat, batch_idx)
+
+        test_t = torch.cat(test_t, dim=0)
         test_rho = torch.cat(test_rho, dim=0)
-        test_rho_prime = torch.cat(test_rho_prime, dim=0)
+        test_rho_pred = torch.cat(test_rho_pred, dim=0)
         test_x = torch.cat(test_x, dim=0)
-        test_x_prime = torch.cat(test_x_prime, dim=0)
+        test_x_pred = torch.cat(test_x_pred, dim=0)
         test_num_atoms = torch.cat(test_num_atoms, dim=0)
+
+        metrics = get_metrics(
+            test_rho,
+            test_rho_pred,
+            test_x,
+            test_x_pred,
+            test_num_atoms,
+            by_structure=True,
+        )
+
+        mae_pos_by_t = scatter_mean(metrics["mae_pos"], test_t, dim=0, dim_size=N)
+        mae_lengths_by_t = scatter_mean(
+            metrics["mae_lengths"], test_t, dim=0, dim_size=N
+        ).mean(dim=1)
+        mae_angles_by_t = scatter_mean(
+            metrics["mae_angles"], test_t, dim=0, dim_size=N
+        ).mean(dim=1)
+        t_range = torch.arange(0, mae_pos_by_t.shape[0]) * step
+
+        plt.scatter(t_range, mae_pos_by_t)
+        writer.add_figure("test/mae_pos", plt.gcf(), batch_idx)
+        plt.close()
+        plt.scatter(t_range, mae_lengths_by_t)
+        writer.add_figure("test/mae_lengths", plt.gcf(), batch_idx)
+        plt.close()
+        plt.scatter(t_range, mae_angles_by_t)
+        writer.add_figure("test/mae_angles", plt.gcf(), batch_idx)
+        plt.close()
+
+        writer.add_scalar("test/mae_pos", metrics["mae_pos"].mean(), batch_idx)
+        writer.add_scalar("test/mae_lengths", metrics["mae_lengths"].mean(), batch_idx)
+        writer.add_scalar("test/mae_angles", metrics["mae_angles"].mean(), batch_idx)
 
         metrics = {
             "loss": losses,
             "loss_pos": losses_pos,
             "loss_lattice": losses_lat,
-            **get_metrics(
-                test_rho, test_rho_prime, test_x, test_x_prime, test_num_atoms
-            ),
+            **{
+                k: v.item()
+                for k, v in get_metrics(
+                    test_rho, test_rho_pred, test_x, test_x_pred, test_num_atoms
+                ).items()
+            },
         }
 
         with open(os.path.join(log_dir, "metrics.json"), "w") as fp:
@@ -381,7 +428,6 @@ if __name__ == "__main__":
 
         print("\nmetrics:")
         print(json.dumps(metrics, indent=4))
-
         writer.add_scalar("test/loss", losses, batch_idx)
         writer.add_scalar("test/loss_pos", losses_pos, batch_idx)
         writer.add_scalar("test/loss_lattice", losses_lat, batch_idx)

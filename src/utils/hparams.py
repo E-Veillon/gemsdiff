@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import json
 
+
 @dataclass
 class Hparams:
     batch_size: int = 128
@@ -18,11 +19,11 @@ class Hparams:
     vector_fields_edges: str = ""
     vector_fields_triplets: str = "n_ij|n_ik|angle"
 
-    model:str = "vae"
+    model: str = "vae"
 
     layers: int = 3
 
-    train_pos: bool = False
+    diffusion_steps: int = 1000
 
     @property
     def vector_fields(self):
