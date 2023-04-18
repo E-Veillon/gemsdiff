@@ -277,7 +277,7 @@ class GemsNetDiffusion(nn.Module):
 
         iterator = range(self.diffusion_steps - 1, -1, -1)
         if verbose:
-            iterator = tqdm.tqdm(iterator)
+            iterator = tqdm.tqdm(iterator, desc="sampling", leave=False)
 
         for t in iterator:
             emb = self.t_embedding(torch.full_like(z, fill_value=t))

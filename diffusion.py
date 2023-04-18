@@ -23,6 +23,8 @@ from src.utils.data import MP20, Carbon24, Perov5
 from src.utils.hparams import Hparams
 from src.utils.metrics import get_metrics
 from src.model.gemsnet import GemsNetDiffusion
+from src.utils.video import make_video
+from src.utils.cif import make_cif
 from src.loss import OptimalTrajLoss, LatticeParametersLoss
 
 
@@ -113,6 +115,7 @@ if __name__ == "__main__":
         knn=hparams.knn,
         num_blocks=hparams.layers,
         vector_fields=hparams.vector_fields,
+        diffusion_steps=hparams.diffusion_steps,
     ).to(device)
 
     opt = optim.Adam(model.parameters(), lr=hparams.lr, betas=(hparams.beta1, 0.999))
@@ -120,21 +123,6 @@ if __name__ == "__main__":
     logs = {"batch": [], "loss": [], "loss_pos": [], "loss_lat": []}
 
     best_val = float("inf")
-
-    for batch in loader_train:
-        batch = batch.to(device)
-
-        limit_batch_size = 8
-        batch.num_atoms = batch.num_atoms[:limit_batch_size]
-        batch.cell = batch.cell[:limit_batch_size]
-        max_atoms = batch.num_atoms.sum()
-        batch.pos = batch.pos[:max_atoms]
-        batch.z = batch.z[:max_atoms]
-        break
-
-    rho, x = model.sampling(batch.z, batch.num_atoms, return_history=True, verbose=True)
-    print(rho.shape, x.shape)
-    exit(0)
 
     batch_idx = 0
     snapshot_idx = 0
@@ -321,6 +309,30 @@ if __name__ == "__main__":
             )
 
     with torch.no_grad():
+        for batch in loader_test:
+            batch = batch.to(device)
+
+            limit_batch_size = 16
+            batch.num_atoms = batch.num_atoms[:limit_batch_size]
+            batch.cell = batch.cell[:limit_batch_size]
+            max_atoms = batch.num_atoms.sum()
+            batch.pos = batch.pos[:max_atoms]
+            batch.z = batch.z[:max_atoms]
+            break
+
+        rho, x = model.sampling(
+            batch.z, batch.num_atoms, return_history=True, verbose=True
+        )
+
+        cif = make_cif(rho[-1], x[-1], batch.z, batch.num_atoms)
+
+        with open(os.path.join(log_dir, "sampling.cif"), "w") as fp:
+            fp.write(cif)
+
+        video_tensor = make_video(rho, x, batch.z, batch.num_atoms, step=32)
+
+        writer.add_video("sampling", video_tensor)
+
         test_losses = []
         test_losses_pos = []
         test_losses_lat = []
@@ -340,13 +352,13 @@ if __name__ == "__main__":
         for batch in tqdm.tqdm(loader_test, leave=False, position=1, desc="test"):
             batch = batch.to(device)
 
-            loss, loss_pos, loss_lattice, pred_rho, pred_x = model.get_loss(
+            loss, loss_pos, loss_lattice, _, _, pred_rho, pred_x = model.get_loss(
                 batch.cell,
                 batch.pos,
                 batch.z,
                 batch.num_atoms,
                 t=t[: batch.num_atoms.shape[0]],
-                return_output=True,
+                return_data=True,
             )
 
             test_t.append(t_idx[: batch.num_atoms.shape[0]])
