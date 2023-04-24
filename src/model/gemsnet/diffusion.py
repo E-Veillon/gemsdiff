@@ -6,10 +6,17 @@ import tqdm
 
 from typing import Tuple, Union
 import math
+import warnings
 
 from src.utils.scaler import LatticeScaler
 from src.loss import OptimalTrajLoss, LatticeParametersLoss
 from .vae import GemsNetVAE
+
+import scipy.linalg
+
+
+def logm(A):
+    return torch.from_numpy(scipy.linalg.logm(A.cpu(), disp=False)[0]).to(A.device)
 
 
 class TEmbedding(nn.Module):
@@ -38,6 +45,12 @@ class TrajLoss(nn.Module):
         return (pred - target).norm(dim=1).pow(2).mean()
 
 
+"""
+        x_betas: Tuple[float, float] = (1e-6, 2e-4),
+        rho_betas: Tuple[float, float] = (1e-5, 2e-2),
+"""
+
+
 class GemsNetDiffusion(nn.Module):
     def __init__(
         self,
@@ -54,9 +67,8 @@ class GemsNetDiffusion(nn.Module):
         global_features: int = None,
         emb_size_atom: int = 128,
         x_betas: Tuple[float, float] = (1e-6, 2e-4),
-        # x_betas: Tuple[float, float] = (1e-5, 3e-5),
         rho_betas: Tuple[float, float] = (1e-5, 2e-2),
-        diffusion_steps: int = 1000,
+        diffusion_steps: int = 250,
     ):
         super().__init__()
 
@@ -163,7 +175,7 @@ class GemsNetDiffusion(nn.Module):
         w, V = torch.linalg.eig(rho)
         w, V = w.real, V.real
         return torch.einsum(
-            "bij,bj,bjk,ikl->bl", V, w.log(), torch.inverse(V), self.basis_inv
+            "bij,bj,bjk,ikl->bl", V, w.log(), torch.linalg.pinv(V), self.basis_inv
         )
 
     def vect_to_rho(self, x: torch.FloatTensor) -> torch.FloatTensor:
@@ -198,6 +210,28 @@ class GemsNetDiffusion(nn.Module):
         traj -= scatter_mean(traj, batch, dim=0, dim_size=num_atoms.shape[0])[batch]
 
         return (x + traj) % 1.0
+
+    def limit_volume(
+        self,
+        rho: torch.FloatTensor,
+        min_volume: float = 1e-3,
+        max_volume: float = 20000,
+    ):
+        volume = rho.det()
+
+        mask = volume < min_volume
+        if any(mask):
+            rho[mask] = (
+                torch.eye(3, device=rho.device).unsqueeze(0).repeat(mask.sum(), 1, 1)
+            )
+            warnings.warn("[Langevin dynamics] minimum volume limit constraint reached")
+
+        mask = volume > max_volume
+        if any(mask):
+            rho[mask] *= (max_volume / volume[mask]) ** (1 / 3)
+            warnings.warn("[Langevin dynamics] maximum volume limit constraint reached")
+
+        return rho
 
     def get_loss(
         self,
@@ -281,6 +315,7 @@ class GemsNetDiffusion(nn.Module):
 
         for t in iterator:
             emb = self.t_embedding(torch.full_like(z, fill_value=t))
+            rho = self.limit_volume(rho)
             pred_x, _, pred_rho = self.gemsnet(rho, x, z, num_atoms, emb)
             x, rho = self.sample(pred_x, pred_rho, t)
 

@@ -1,11 +1,12 @@
 from dataclasses import dataclass
 import json
+from typing import Tuple
 
 
 @dataclass
 class Hparams:
     batch_size: int = 128
-    epochs: int = 512
+    epochs: int = 128
 
     lr: float = 1e-3
     beta1: float = 0.9
@@ -23,7 +24,9 @@ class Hparams:
 
     layers: int = 3
 
-    diffusion_steps: int = 1000
+    diffusion_steps: int = 100
+    x_betas: Tuple[float, float] = (1e-6, 2e-3)
+    rho_betas: Tuple[float, float] = (1e-5, 1e-1)
 
     @property
     def vector_fields(self):

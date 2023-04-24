@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from typing import Tuple
+import os
 
 from src.utils.geometry import Geometry
 from .gemsnet import GemsNetT
@@ -51,7 +52,7 @@ class GemsNetVAE(nn.Module):
         x: torch.FloatTensor,
         z: torch.LongTensor,
         num_atoms: torch.LongTensor,
-        emb: torch.FloatTensor = None
+        emb: torch.FloatTensor = None,
     ) -> torch.FloatTensor:
         eye = torch.eye(3, device=cell.device).unsqueeze(0).repeat(cell.shape[0], 1, 1)
 
@@ -65,7 +66,7 @@ class GemsNetVAE(nn.Module):
             compute_reverse_idx=True,
         )
 
-        h, h_mat = self.encoder(z, geometry,emb)
+        h, h_mat = self.encoder(z, geometry, emb)
 
         h_atoms = torch.cat((h, h_mat[geometry.batch]), dim=1)
 

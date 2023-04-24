@@ -74,7 +74,7 @@ def compute_metrics(model, dataloader, desc_bar):
     list_num_atoms = []
 
     step = 32
-    N = model.diffusion_steps // step
+    N = dataloader.batch_size * step // model.diffusion_steps
     t = torch.arange(0, model.diffusion_steps, step)
     size = t.shape[0]
     t_idx = torch.arange(0, size)
@@ -115,9 +115,9 @@ def compute_metrics(model, dataloader, desc_bar):
         list_losses_lat.append(loss_lattice.item())
 
     loss = {
-        "loss": torch.tensor(losses).mean().item(),
-        "pos": torch.tensor(losses_pos).mean().item(),
-        "lattice": torch.tensor(losses_lat).mean().item(),
+        "loss": torch.tensor(list_losses).mean().item(),
+        "pos": torch.tensor(list_losses_pos).mean().item(),
+        "lattice": torch.tensor(list_losses_lat).mean().item(),
     }
 
     list_t = torch.cat(list_t, dim=0)
@@ -264,6 +264,8 @@ if __name__ == "__main__":
         knn=hparams.knn,
         num_blocks=hparams.layers,
         vector_fields=hparams.vector_fields,
+        x_betas=hparams.x_betas,
+        rho_betas=hparams.rho_betas,
         diffusion_steps=hparams.diffusion_steps,
     ).to(device)
 
@@ -321,25 +323,9 @@ if __name__ == "__main__":
         loss, metrics, metrics_gt = compute_metrics(model, loader_valid, "validation")
         add_tensorboard(writer, loss, metrics, metrics_gt, "valid", batch_idx)
 
-    loss, metrics, metrics_gt = compute_metrics(model, loader_test, "test")
-    add_tensorboard(writer, loss, metrics, metrics_gt, "test", batch_idx)
-
-    metrics = {
-        "loss": loss["loss"],
-        "loss_pos": loss["pos"],
-        "loss_lattice": loss["lattice"],
-        "mae_pos": metrics["mae_pos"].mean().item(),
-        "mae_lengths": metrics["mae_lengths"].mean().item(),
-        "mae_angles": metrics["mae_angles"].mean().item(),
-    }
-
-    with open(os.path.join(log_dir, "metrics.json"), "w") as fp:
-        json.dump(metrics, fp, indent=4)
-
-    print("\nmetrics:")
-    print(json.dumps(metrics, indent=4))
-
-    writer.add_hparams(hparams.dict(), metrics)
+        if loss["loss"] < best_val:
+            torch.save(model.state_dict(), os.path.join(log_dir, "best.pt"))
+            loss["loss"] = best_val
 
     for batch in loader_test:
         batch = batch.to(device)
@@ -362,5 +348,29 @@ if __name__ == "__main__":
     video_tensor = make_video(rho, x, batch.z, batch.num_atoms, step=32)
 
     writer.add_video("sampling", video_tensor)
+
+    loss, metrics, metrics_gt = compute_metrics(model, loader_test, "test")
+    add_tensorboard(writer, loss, metrics, metrics_gt, "test", batch_idx)
+
+    metrics = {
+        "loss": loss["loss"],
+        "loss_pos": loss["pos"],
+        "loss_lattice": loss["lattice"],
+        "mae_pos": metrics["mae_pos"].mean().item(),
+        "mae_lengths": metrics["mae_lengths"].mean().item(),
+        "mae_angles": metrics["mae_angles"].mean().item(),
+    }
+
+    with open(os.path.join(log_dir, "metrics.json"), "w") as fp:
+        json.dump(metrics, fp, indent=4)
+
+    print("\nmetrics:")
+    print(json.dumps(metrics, indent=4))
+
+    hparams["x_betas_0"], hparams["x_betas_T"] = hparams["x_betas"]
+    hparams["rho_betas_0"], hparams["rho_betas_T"] = hparams["rho_betas"]
+    del hparams["x_betas"], hparams["rho_betas"]
+
+    writer.add_hparams(hparams.dict(), metrics)
 
     writer.close()
