@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch_geometric.loader import DataLoader
 from torch_scatter import scatter_mean
+from torch_ema import ExponentialMovingAverage
 import pandas as pd
 import tqdm
 
@@ -270,6 +271,7 @@ if __name__ == "__main__":
     ).to(device)
 
     opt = optim.Adam(model.parameters(), lr=hparams.lr, betas=(hparams.beta1, 0.999))
+    ema = ExponentialMovingAverage(model.parameters(), decay=0.995)
 
     logs = {"batch": [], "loss": [], "loss_pos": [], "loss_lat": []}
 
@@ -294,6 +296,7 @@ if __name__ == "__main__":
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), hparams.grad_clipping)
             opt.step()
+            ema.update()
 
             losses.append(loss.item())
             losses_pos.append(loss_pos.item())
@@ -320,12 +323,13 @@ if __name__ == "__main__":
 
         pd.DataFrame(logs).set_index("batch").to_csv(os.path.join(log_dir, "loss.csv"))
 
-        loss, metrics, metrics_gt = compute_metrics(model, loader_valid, "validation")
-        add_tensorboard(writer, loss, metrics, metrics_gt, "valid", batch_idx)
+        with ema.average_parameters():
+            loss, metrics, metrics_gt = compute_metrics(model, loader_valid, "validation")
+            add_tensorboard(writer, loss, metrics, metrics_gt, "valid", batch_idx)
 
-        if loss["loss"] < best_val:
-            torch.save(model.state_dict(), os.path.join(log_dir, "best.pt"))
-            loss["loss"] = best_val
+            if loss["loss"] < best_val:
+                torch.save(model.state_dict(), os.path.join(log_dir, "best.pt"))
+                loss["loss"] = best_val
 
     for batch in loader_test:
         batch = batch.to(device)
@@ -366,10 +370,6 @@ if __name__ == "__main__":
 
     print("\nmetrics:")
     print(json.dumps(metrics, indent=4))
-
-    hparams["x_betas_0"], hparams["x_betas_T"] = hparams["x_betas"]
-    hparams["rho_betas_0"], hparams["rho_betas_T"] = hparams["rho_betas"]
-    del hparams["x_betas"], hparams["rho_betas"]
 
     writer.add_hparams(hparams.dict(), metrics)
 

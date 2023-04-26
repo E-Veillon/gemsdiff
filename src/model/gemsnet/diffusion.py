@@ -214,7 +214,7 @@ class GemsNetDiffusion(nn.Module):
     def limit_volume(
         self,
         rho: torch.FloatTensor,
-        min_volume: float = 1e-3,
+        min_volume: float = 1e-1,
         max_volume: float = 20000,
     ):
         volume = rho.det()
@@ -228,7 +228,9 @@ class GemsNetDiffusion(nn.Module):
 
         mask = volume > max_volume
         if any(mask):
-            rho[mask] *= (max_volume / volume[mask]) ** (1 / 3)
+            rho[mask] = (
+                rho[mask] * ((max_volume / volume[mask]) ** (1 / 3))[:, None, None]
+            )
             warnings.warn("[Langevin dynamics] maximum volume limit constraint reached")
 
         return rho

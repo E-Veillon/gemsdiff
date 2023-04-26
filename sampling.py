@@ -91,7 +91,17 @@ if __name__ == "__main__":
         for idx, batch in enumerate(tqdm.tqdm(loader_test)):
             batch = batch.to(device)
 
-            pred_rho, pred_x = model.sampling(batch.z, batch.num_atoms, verbose=True)
+            for _ in range(3):
+                try:
+                    pred_rho, pred_x = model.sampling(
+                        batch.z, batch.num_atoms, verbose=True
+                    )
+                except:
+                    print("generation fail, restart!")
+                    continue
+                break
+            else:
+                raise Exception("fail to sample a batch after 3 attempts")
 
             rho.append(pred_rho)
             x.append(pred_x)
