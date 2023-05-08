@@ -213,7 +213,11 @@ class GemsNetDiffusion(nn.Module):
         return (x + traj) % 1.0
 
     def limit_density(
-        self, rho: torch.FloatTensor, z: torch.LongTensor, num_atoms: torch.LongTensor
+        self,
+        rho: torch.FloatTensor,
+        z: torch.LongTensor,
+        num_atoms: torch.LongTensor,
+        rho_backup: torch.FloatTensor,
     ):
         batch = torch.arange(num_atoms.shape[0], device=rho.device).repeat_interleave(
             num_atoms
@@ -223,20 +227,10 @@ class GemsNetDiffusion(nn.Module):
         )
         densities = 1.66054 * masses / rho.det()
 
-        mask = densities < self.density_min
+        mask = (densities < self.density_min) | (densities > self.density_max)
         if any(mask):
-            rho[mask] = (
-                torch.eye(3, device=rho.device).unsqueeze(0).repeat(mask.sum(), 1, 1)
-            ) * ((densities[mask] / self.density_min) ** (1 / 3))[:, None, None]
-            warnings.warn("[Langevin dynamics] minimum density constraint reached")
-
-        mask = densities > self.density_max
-        if any(mask):
-            rho[mask] = (
-                rho[mask]
-                * ((densities[mask] / self.density_max) ** (1 / 3))[:, None, None]
-            )
-            warnings.warn("[Langevin dynamics] maximum density constraint reached")
+            rho[mask] = rho_backup[mask]
+            warnings.warn("[Langevin dynamics] density constraint reached")
 
         return rho
 
@@ -315,17 +309,22 @@ class GemsNetDiffusion(nn.Module):
         rho = self.random_rho_T(num_atoms.shape[0], device=z.device)
         x = torch.rand((z.shape[0], 3), device=z.device)
 
-        if return_history:
-            rho_history, x_history = [rho], [x]
+        prev_rho = rho
 
-        iterator = range(self.diffusion_steps, -1, -1)
+        rho_history, x_history = [], []
+        if return_history:
+            rho_history.append(rho)
+            x_history.append(x)
+
+        iterator = range(self.diffusion_steps - 1, -1, -1)
         if verbose:
             iterator = tqdm.tqdm(iterator, desc="sampling", leave=False)
 
         for t in iterator:
             emb = self.t_embedding(torch.full_like(z, fill_value=t))
             pred_x, _, pred_rho = self.gemsnet(rho, x, z, num_atoms, emb)
-            pred_rho = self.limit_density(pred_rho, z, num_atoms)
+            pred_rho = self.limit_density(pred_rho, z, num_atoms, prev_rho)
+            prev_rho = rho
             x, rho = self.sample(pred_x, pred_rho, t)
 
             if return_history:
