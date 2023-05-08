@@ -45,7 +45,7 @@ def process_cif(args):
     ).all()
 
     cell = atoms.cell.array.astype(np.float32)
-    z = np.array(struct.atomic_numbers, dtype=np.long)
+    z = np.array(struct.atomic_numbers, dtype=np.int64)
     pos = struct.frac_coords.astype(np.float32)
 
     data = {"cell": cell, "lengths": lengths, "angles": angles, "z": z, "pos": pos}

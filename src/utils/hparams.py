@@ -7,9 +7,9 @@ import copy
 @dataclass
 class Hparams:
     batch_size: int = 128
-    epochs: int = 128
+    epochs: int = 256
 
-    lr: float = 3e-4
+    lr: float = 1e-3
     beta1: float = 0.9
     grad_clipping: float = 1.0
 

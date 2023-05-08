@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_scatter import scatter_mean
+from torch_scatter import scatter_mean, scatter_add
 import tqdm
 
 from typing import Tuple, Union
@@ -13,6 +13,8 @@ from src.loss import OptimalTrajLoss, LatticeParametersLoss
 from .vae import GemsNetVAE
 
 import scipy.linalg
+
+from ase.data import atomic_masses
 
 
 def logm(A):
@@ -45,12 +47,6 @@ class TrajLoss(nn.Module):
         return (pred - target).norm(dim=1).pow(2).mean()
 
 
-"""
-        x_betas: Tuple[float, float] = (1e-6, 2e-4),
-        rho_betas: Tuple[float, float] = (1e-5, 2e-2),
-"""
-
-
 class GemsNetDiffusion(nn.Module):
     def __init__(
         self,
@@ -67,8 +63,9 @@ class GemsNetDiffusion(nn.Module):
         global_features: int = None,
         emb_size_atom: int = 128,
         x_betas: Tuple[float, float] = (1e-6, 2e-4),
-        rho_betas: Tuple[float, float] = (1e-5, 2e-2),
-        diffusion_steps: int = 250,
+        rho_betas: Tuple[float, float] = (1e-5, 1e-1),
+        diffusion_steps: int = 100,
+        limit_density: Tuple[float, float] = (0.1, 100.0),
     ):
         super().__init__()
 
@@ -86,6 +83,7 @@ class GemsNetDiffusion(nn.Module):
         # self.loss_pos_fn = TrajLoss()
         self.loss_pos_fn = OptimalTrajLoss(center=True, euclidian=True, distance="l1")
 
+        (self.density_min, self.density_max) = limit_density
         self.x_betas = nn.Parameter(
             torch.linspace(x_betas[0], x_betas[1], diffusion_steps), requires_grad=False
         )
@@ -155,6 +153,9 @@ class GemsNetDiffusion(nn.Module):
             ),
             requires_grad=False,
         )
+        self.atomic_masses = nn.Parameter(
+            torch.from_numpy(atomic_masses).float(), requires_grad=False
+        )
 
         self.basis_inv = nn.Parameter(
             torch.inverse(self.basis.view(9, 9)).view(3, 3, 9),
@@ -211,27 +212,31 @@ class GemsNetDiffusion(nn.Module):
 
         return (x + traj) % 1.0
 
-    def limit_volume(
-        self,
-        rho: torch.FloatTensor,
-        min_volume: float = 1e-1,
-        max_volume: float = 20000,
+    def limit_density(
+        self, rho: torch.FloatTensor, z: torch.LongTensor, num_atoms: torch.LongTensor
     ):
-        volume = rho.det()
+        batch = torch.arange(num_atoms.shape[0], device=rho.device).repeat_interleave(
+            num_atoms
+        )
+        masses = scatter_add(
+            self.atomic_masses[z], batch, dim=0, dim_size=num_atoms.shape[0]
+        )
+        densities = 1.66054 * masses / rho.det()
 
-        mask = volume < min_volume
+        mask = densities < self.density_min
         if any(mask):
             rho[mask] = (
                 torch.eye(3, device=rho.device).unsqueeze(0).repeat(mask.sum(), 1, 1)
-            )
-            warnings.warn("[Langevin dynamics] minimum volume limit constraint reached")
+            ) * ((densities[mask] / self.density_min) ** (1 / 3))[:, None, None]
+            warnings.warn("[Langevin dynamics] minimum density constraint reached")
 
-        mask = volume > max_volume
+        mask = densities > self.density_max
         if any(mask):
             rho[mask] = (
-                rho[mask] * ((max_volume / volume[mask]) ** (1 / 3))[:, None, None]
+                rho[mask]
+                * ((densities[mask] / self.density_max) ** (1 / 3))[:, None, None]
             )
-            warnings.warn("[Langevin dynamics] maximum volume limit constraint reached")
+            warnings.warn("[Langevin dynamics] maximum density constraint reached")
 
         return rho
 
@@ -287,12 +292,14 @@ class GemsNetDiffusion(nn.Module):
     def sample(
         self, x_t: torch.FloatTensor, rho_t: torch.FloatTensor, t: int
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
+        if t == 0:
+            return x_t, rho_t
+
         x_rand = torch.randn_like(x_t)
         rho_rand = F.pad(torch.randn((rho_t.shape[0], 6), device=rho_t.device), (3, 0))
-
-        x_prev = (x_t + self.x_sigma[t] * x_rand) % 1.0
+        x_prev = (x_t + self.x_sigma[t - 1] * x_rand) % 1.0
         rho_prev = self.vect_to_rho(
-            self.rho_to_vect(rho_t) + self.rho_sigma[t] * rho_rand
+            self.rho_to_vect(rho_t) + self.rho_sigma[t - 1] * rho_rand
         )
 
         return x_prev, rho_prev
@@ -311,14 +318,14 @@ class GemsNetDiffusion(nn.Module):
         if return_history:
             rho_history, x_history = [rho], [x]
 
-        iterator = range(self.diffusion_steps - 1, -1, -1)
+        iterator = range(self.diffusion_steps, -1, -1)
         if verbose:
             iterator = tqdm.tqdm(iterator, desc="sampling", leave=False)
 
         for t in iterator:
             emb = self.t_embedding(torch.full_like(z, fill_value=t))
-            rho = self.limit_volume(rho)
             pred_x, _, pred_rho = self.gemsnet(rho, x, z, num_atoms, emb)
+            pred_rho = self.limit_density(pred_rho, z, num_atoms)
             x, rho = self.sample(pred_x, pred_rho, t)
 
             if return_history:

@@ -81,9 +81,13 @@ if __name__ == "__main__":
         num_blocks=hparams.layers,
         vector_fields=hparams.vector_fields,
         diffusion_steps=hparams.diffusion_steps,
+        x_betas=hparams.x_betas,
+        rho_betas=hparams.rho_betas,
     ).to(device)
 
-    model.load_state_dict(torch.load(os.path.join(args.checkpoint, "best.pt")))
+    model.load_state_dict(
+        torch.load(os.path.join(args.checkpoint, "best.pt")), strict=False
+    )
     model.eval()
 
     with torch.no_grad():
@@ -96,7 +100,8 @@ if __name__ == "__main__":
                     pred_rho, pred_x = model.sampling(
                         batch.z, batch.num_atoms, verbose=True
                     )
-                except:
+                except Exception as e:
+                    print(e)
                     print("generation fail, restart!")
                     continue
                 break
