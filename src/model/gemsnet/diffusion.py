@@ -17,8 +17,22 @@ import scipy.linalg
 from ase.data import atomic_masses
 
 
-def logm(A):
-    return torch.from_numpy(scipy.linalg.logm(A.cpu(), disp=False)[0]).to(A.device)
+def logm(X):
+    return torch.stack(
+        [
+            torch.from_numpy(scipy.linalg.logm(X_i.cpu(), disp=False)[0]).real.float()
+            for X_i in X
+        ],
+        0,
+    ).to(X.device)
+
+
+"""
+def logm(X: torch.FloatTensor) -> torch.FloatTensor:
+    w, V = torch.linalg.eig(X)
+    return torch.einsum("bij,bj,bjk->bik", V, w.log(), torch.linalg.inv(V)).real
+
+"""
 
 
 class TEmbedding(nn.Module):
@@ -173,6 +187,8 @@ class GemsNetDiffusion(nn.Module):
         return self.vect_to_rho(epsilon)
 
     def rho_to_vect(self, rho: torch.FloatTensor) -> torch.FloatTensor:
+        return torch.einsum("bik,ikl->bl", logm(rho), self.basis_inv)
+
         w, V = torch.linalg.eig(rho)
         w, V = w.real, V.real
         return torch.einsum(
