@@ -1,31 +1,15 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
 from torch_geometric.loader import DataLoader
-from torch_scatter import scatter_mean
-import pandas as pd
+
 import tqdm
 
-import matplotlib.pyplot as plt
-from ase.visualize.plot import plot_atoms
-from ase.io import write
-from ase.spacegroup import crystal
-
 import os
-import json
-import math
-import random
-import datetime
 
 from src.utils.scaler import LatticeScaler
 from src.utils.data import MP20, Carbon24, Perov5
 from src.utils.hparams import Hparams
-from src.utils.metrics import get_metrics
 from src.model.gemsnet import GemsNetDiffusion
-from src.utils.video import make_video
 from src.utils.cif import make_cif
-from src.loss import OptimalTrajLoss, LatticeParametersLoss
 
 
 def get_dataloader(path: str, dataset: str, batch_size: int):
@@ -95,18 +79,7 @@ if __name__ == "__main__":
         for idx, batch in enumerate(tqdm.tqdm(loader_test)):
             batch = batch.to(device)
 
-            for _ in range(3):
-                try:
-                    pred_rho, pred_x = model.sampling(
-                        batch.z, batch.num_atoms, verbose=True
-                    )
-                except Exception as e:
-                    print(e)
-                    print("generation fail, restart!")
-                    continue
-                break
-            else:
-                raise Exception("fail to sample a batch after 3 attempts")
+            pred_rho, pred_x = model.sampling(batch.z, batch.num_atoms, verbose=True)
 
             rho.append(pred_rho)
             x.append(pred_x)
@@ -124,3 +97,7 @@ if __name__ == "__main__":
 
             with open(args.output, "w") as fp:
                 fp.write(cif)
+
+            break
+
+    torch.save(model.state_dict(), "model.pt")

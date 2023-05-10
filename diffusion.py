@@ -324,7 +324,9 @@ if __name__ == "__main__":
         pd.DataFrame(logs).set_index("batch").to_csv(os.path.join(log_dir, "loss.csv"))
 
         with ema.average_parameters():
-            loss, metrics, metrics_gt = compute_metrics(model, loader_valid, "validation")
+            loss, metrics, metrics_gt = compute_metrics(
+                model, loader_valid, "validation"
+            )
             add_tensorboard(writer, loss, metrics, metrics_gt, "valid", batch_idx)
 
             if loss["loss"] < best_val:

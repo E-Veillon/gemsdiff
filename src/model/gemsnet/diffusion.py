@@ -12,11 +12,12 @@ from src.utils.scaler import LatticeScaler
 from src.loss import OptimalTrajLoss, LatticeParametersLoss
 from .vae import GemsNetVAE
 
-import scipy.linalg
+# import scipy.linalg
 
 from ase.data import atomic_masses
 
 
+"""
 def logm(X):
     return torch.stack(
         [
@@ -25,14 +26,12 @@ def logm(X):
         ],
         0,
     ).to(X.device)
-
-
 """
+
+
 def logm(X: torch.FloatTensor) -> torch.FloatTensor:
     w, V = torch.linalg.eig(X)
     return torch.einsum("bij,bj,bjk->bik", V, w.log(), torch.linalg.inv(V)).real
-
-"""
 
 
 class TEmbedding(nn.Module):
@@ -189,12 +188,6 @@ class GemsNetDiffusion(nn.Module):
     def rho_to_vect(self, rho: torch.FloatTensor) -> torch.FloatTensor:
         return torch.einsum("bik,ikl->bl", logm(rho), self.basis_inv)
 
-        w, V = torch.linalg.eig(rho)
-        w, V = w.real, V.real
-        return torch.einsum(
-            "bij,bj,bjk,ikl->bl", V, w.log(), torch.linalg.pinv(V), self.basis_inv
-        )
-
     def vect_to_rho(self, x: torch.FloatTensor) -> torch.FloatTensor:
         return torch.matrix_exp(torch.einsum("bi,ijk->bjk", x, self.basis))
 
@@ -220,8 +213,6 @@ class GemsNetDiffusion(nn.Module):
         ).repeat_interleave(num_atoms)
         epsilon = torch.randn_like(x)
         t_batch = t.repeat_interleave(num_atoms, dim=0)
-
-        # x_t = x + epsilon * (1 - self.x_alphas_bar[t_batch]).sqrt()[:, None]
 
         traj = epsilon * (1 - self.x_alphas_bar[t_batch]).sqrt()[:, None]
         traj -= scatter_mean(traj, batch, dim=0, dim_size=num_atoms.shape[0])[batch]
@@ -324,6 +315,21 @@ class GemsNetDiffusion(nn.Module):
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
         rho = self.random_rho_T(num_atoms.shape[0], device=z.device)
         x = torch.rand((z.shape[0], 3), device=z.device)
+
+        """
+        from ase.cell import Cell
+
+        angles = torch.stack(
+            [torch.from_numpy(Cell(r.cpu().numpy()).angles()).float() for r in rho],
+            dim=0,
+        )
+        lengths = torch.stack(
+            [torch.from_numpy(Cell(r.cpu().numpy()).lengths()).float() for r in rho],
+            dim=0,
+        )
+        print(angles.mean(), angles.std(), angles.min(), angles.max())
+        print(lengths.mean(), lengths.std(), lengths.min(), lengths.max())
+        """
 
         prev_rho = rho
 
