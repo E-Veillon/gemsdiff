@@ -74,7 +74,7 @@ def compute_metrics(model, dataloader, desc_bar):
     list_x_t = []
     list_num_atoms = []
 
-    step = 32
+    step = model.diffusion_steps // 32
     N = dataloader.batch_size * step // model.diffusion_steps
     t = torch.arange(0, model.diffusion_steps, step)
     size = t.shape[0]

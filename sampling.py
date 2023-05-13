@@ -54,7 +54,7 @@ if __name__ == "__main__":
     hparams = Hparams()
     hparams.from_json(os.path.join(args.checkpoint, "hparams.json"))
 
-    loader_test = get_dataloader(args.dataset_path, args.dataset, 512)
+    loader_test = get_dataloader(args.dataset_path, args.dataset, 12)
 
     scaler = LatticeScaler().to(device)
 
@@ -76,10 +76,13 @@ if __name__ == "__main__":
 
     with torch.no_grad():
         rho, x, z, num_atoms = [], [], [], []
-        for idx, batch in enumerate(tqdm.tqdm(loader_test)):
+        # for idx, batch in enumerate(tqdm.tqdm(loader_test)):
+        for idx, batch in enumerate(loader_test):
             batch = batch.to(device)
 
-            pred_rho, pred_x = model.sampling(batch.z, batch.num_atoms, verbose=True)
+            pred_rho, pred_x = model.sampling_corrected(
+                batch.cell, batch.z, batch.num_atoms, verbose=True
+            )
 
             rho.append(pred_rho)
             x.append(pred_x)

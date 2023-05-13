@@ -376,22 +376,34 @@ class GemsNetT(torch.nn.Module):
             e_ij = geometry.edges_e_ij[id3_ba]
             e_ik = geometry.edges_e_ij[id3_ca]
 
+            print("S_st:", S_st.mean().item(), S_st.std().item())
+
             vector_fields = self.vector_fields(cell, batch_triplets, e_ij, e_ik)
+            print(vector_fields.shape)
             filter_nan = ~(
                 (vector_fields != vector_fields)
                 .view(vector_fields.shape[0], -1)
                 .any(dim=1)
+            )
+            print(filter_nan.shape)
+            print("filter_nan:", filter_nan.float().mean().item())
+            print(
+                "vector_fields:",
+                vector_fields[filter_nan].mean().item(),
+                vector_fields[filter_nan].std().item(),
             )
 
             batch_triplets = batch_triplets[filter_nan]
             fields = (S_st[filter_nan, :, None, None] * vector_fields[filter_nan]).sum(
                 dim=1
             )
+            print("fields:", fields.mean().item(), fields.std().item())
             I = torch.eye(3, 3, device=cell.device)[None]
             S_t = I + scatter(
                 fields, batch_triplets, dim=0, dim_size=cell.shape[0], reduce="mean"
             )  # 1st order approx of matrix exp
             # cell_prime = torch.bmm(S_t, cell)
+            print("S_t:", S_t.mean().item(), S_t.std().item())
 
             results.append(S_t)
 
