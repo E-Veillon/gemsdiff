@@ -208,9 +208,9 @@ class GemsNetDiffusion(nn.Module):
         mask = t == 0
         mu[mask] = x_0[mask]
 
-        print("x_0\t", "\t".join([f"{x:.3f}" for x in x_0[:12, -1]]), flush=True)
-        print("x_t\t", "\t".join([f"{x:.3f}" for x in x_t[:12, -1]]), flush=True)
-        print("mu\t", "\t".join([f"{x:.3f}" for x in mu[:12, -1]]), flush=True)
+        # print("x_0\t", "\t".join([f"{x:.3f}" for x in x_0[:12, -1]]), flush=True)
+        # print("x_t\t", "\t".join([f"{x:.3f}" for x in x_t[:12, -1]]), flush=True)
+        # print("mu\t", "\t".join([f"{x:.3f}" for x in mu[:12, -1]]), flush=True)
         return mu
 
     def get_rho_t(
@@ -389,16 +389,16 @@ class GemsNetDiffusion(nn.Module):
     """
 
     @torch.no_grad()
-    def sampling_corrected(
+    def sampling(
         self,
-        rho_gt: torch.FloatTensor,
+        # rho_gt: torch.FloatTensor,
         z: torch.LongTensor,
         num_atoms: torch.LongTensor,
         return_history: bool = False,
         verbose: bool = False,
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
-        rho_real = rho_gt
-        rho_gt = self.rho_to_vect(rho_real)
+        # rho_real = rho_gt
+        # rho_gt = self.rho_to_vect(rho_real)
 
         rho = self.random_rho_T(num_atoms.shape[0], device=z.device)
         x = torch.rand((z.shape[0], 3), device=z.device)
@@ -411,44 +411,45 @@ class GemsNetDiffusion(nn.Module):
         t_list = list(range(self.diffusion_steps - 1, -1, -1))
         if verbose:
             iterator = tqdm.tqdm(t_list, desc="sampling", leave=False)
-        # else:
-        iterator = t_list
+        else:
+            iterator = t_list
 
-        first_density = None
+        # first_density = None
 
-        random_density = self.get_density(rho, z, num_atoms)
+        # random_density = self.get_density(rho, z, num_atoms)
 
-        densities_mean = [random_density.mean().item()]
-        pred_density = []
-        print("density rand mean:", random_density.mean().item())
-        print("density rand std:", random_density.std().item())
+        # densities_mean = [random_density.mean().item()]
+        # pred_density = []
+        # print("density rand mean:", random_density.mean().item())
+        # print("density rand std:", random_density.std().item())
 
         for t in iterator:
             emb = self.t_embedding(torch.full_like(z, fill_value=t))
             pred_x, _, pred_rho = self.gemsnet(rho, x, z, num_atoms, emb)
             # pred_rho = self.limit_density(pred_rho, z, num_atoms, prev_rho)
-            if first_density is None:
-                first_density = self.get_density(pred_rho, z, num_atoms)
-                print("density mean:", first_density.mean().item())
-                print("density std:", first_density.std().item())
+            # if first_density is None:
+            #    first_density = self.get_density(pred_rho, z, num_atoms)
+            # print("density mean:", first_density.mean().item())
+            # print("density std:", first_density.std().item())
 
-            pred_density.append(self.get_density(pred_rho, z, num_atoms).mean().item())
+            # pred_density.append(self.get_density(pred_rho, z, num_atoms).mean().item())
 
             # prev_rho = rho
-            print("t", t)
-            print(
-                "x_real\t", "\t".join([f"{x:.3f}" for x in rho_gt[:12, -1]]), flush=True
-            )
+            # print("t", t)
+            # print(
+            #    "x_real\t", "\t".join([f"{x:.3f}" for x in rho_gt[:12, -1]]), flush=True
+            # )
             x, rho = self.sample(pred_x, rho, pred_rho, t)
 
-            densities = self.get_density(rho, z, num_atoms)
-            densities_mean.append(densities.mean().item())
+            # densities = self.get_density(rho, z, num_atoms)
+            # densities_mean.append(densities.mean().item())
 
             if return_history:
                 rho_history.append(rho)
                 x_history.append(x)
-            exit(0)
+            # exit(0)
 
+        """
         scheduled_densities = []
         for t in t_list:
             t_batch = torch.full_like(num_atoms, fill_value=t)
@@ -487,6 +488,7 @@ class GemsNetDiffusion(nn.Module):
         plt.legend()
         plt.yscale("log")
         plt.savefig("densities.png")
+        """
 
         if return_history:
             rho = torch.stack(rho_history, dim=0)

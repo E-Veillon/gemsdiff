@@ -120,7 +120,7 @@ class VFGrad(VectorFields):
 
     def __init__(self, vector_fields_triplets, normalize: bool = True):
         assert isinstance(normalize, bool)
-        assert isinstance(vector_fields_triplets, set)
+        assert isinstance(vector_fields_triplets, list)
         assert len(vector_fields_triplets) > 0
 
         for op in vector_fields_triplets:
@@ -160,7 +160,7 @@ def make_vector_fields(config):
     assert config["type"] in ["grad"]
 
     if config["type"] == "grad":
-        vector_fields_triplets = set()
+        vector_fields_triplets = []
 
         ops_dict = {
             "n_ij": VFGrad.VectorFieldsNormij,
@@ -175,7 +175,7 @@ def make_vector_fields(config):
 
         for op in config["triplets"]:
             assert op in ops_dict
-            vector_fields_triplets.add(ops_dict[op]())
+            vector_fields_triplets.append(ops_dict[op]())
 
         ops = VFGrad(vector_fields_triplets, normalize=config["normalize"])
 

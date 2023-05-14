@@ -1,6 +1,11 @@
 import torch
 from torch_geometric.loader import DataLoader
 
+# from torch_geometric import seed_everything
+
+# seed_everything(0)
+# torch.use_deterministic_algorithms(mode=True)
+
 import tqdm
 
 import os
@@ -24,7 +29,7 @@ def get_dataloader(path: str, dataset: str, batch_size: int):
         test_set = Perov5(dataset_path, "test")
 
     loader_test = DataLoader(
-        test_set, batch_size=batch_size, shuffle=True, num_workers=4
+        test_set, batch_size=batch_size, shuffle=False, num_workers=4
     )
 
     return loader_test
@@ -54,7 +59,7 @@ if __name__ == "__main__":
     hparams = Hparams()
     hparams.from_json(os.path.join(args.checkpoint, "hparams.json"))
 
-    loader_test = get_dataloader(args.dataset_path, args.dataset, 12)
+    loader_test = get_dataloader(args.dataset_path, args.dataset, 512)
 
     scaler = LatticeScaler().to(device)
 
@@ -76,13 +81,10 @@ if __name__ == "__main__":
 
     with torch.no_grad():
         rho, x, z, num_atoms = [], [], [], []
-        # for idx, batch in enumerate(tqdm.tqdm(loader_test)):
-        for idx, batch in enumerate(loader_test):
+        for idx, batch in enumerate(tqdm.tqdm(loader_test)):
             batch = batch.to(device)
 
-            pred_rho, pred_x = model.sampling_corrected(
-                batch.cell, batch.z, batch.num_atoms, verbose=True
-            )
+            pred_rho, pred_x = model.sampling(batch.z, batch.num_atoms, verbose=True)
 
             rho.append(pred_rho)
             x.append(pred_x)

@@ -376,34 +376,84 @@ class GemsNetT(torch.nn.Module):
             e_ij = geometry.edges_e_ij[id3_ba]
             e_ik = geometry.edges_e_ij[id3_ca]
 
-            print("S_st:", S_st.mean().item(), S_st.std().item())
+            """
+            print("cell", sum([hash(x) for x in cell.flatten().tolist()]))
+            print(
+                "batch_triplets",
+                sum([hash(x) for x in batch_triplets.flatten().tolist()]),
+            )
+            print("e_ij", sum([hash(x) for x in e_ij.flatten().tolist()]) % 0x100000000)
+            print("e_ik", sum([hash(x) for x in e_ik.flatten().tolist()]) % 0x100000000)
+            """
+            # torch.save(cell.cpu(), "cell.pt")
+            # torch.save(batch_triplets.cpu(), "batch_triplets.pt")
+            # torch.save(e_ij.cpu(), "e_ij.pt")
+            # torch.save(e_ik.cpu(), "e_ik.pt")
+
+            # print("S_st:", S_st.mean().item(), S_st.std().item())
 
             vector_fields = self.vector_fields(cell, batch_triplets, e_ij, e_ik)
-            print(vector_fields.shape)
+            """
+            print(
+                "vector_fields_0",
+                sum([hash(x) for x in vector_fields[:, 0].cpu().flatten().tolist()])
+                % 0x100000000,
+            )
+            print(
+                "vector_fields_1",
+                sum([hash(x) for x in vector_fields[:, 1].cpu().flatten().tolist()])
+                % 0x100000000,
+            )
+            print(
+                "vector_fields_2",
+                sum([hash(x) for x in vector_fields[:, 2].cpu().flatten().tolist()])
+                % 0x100000000,
+            )
+            """
+            # torch.save(vector_fields[:,0].cpu(), "vector_fields_0.pt")
+            # torch.save(vector_fields[:,1].cpu(), "vector_fields_1.pt")
+            # torch.save(vector_fields[:,2].cpu(), "vector_fields_2.pt")
+            # print(vector_fields.shape)
             filter_nan = ~(
                 (vector_fields != vector_fields)
                 .view(vector_fields.shape[0], -1)
                 .any(dim=1)
             )
+            """
             print(filter_nan.shape)
-            print("filter_nan:", filter_nan.float().mean().item())
+            print(
+                "filter_nan:",
+                filter_nan.float().mean().item(),
+                (~filter_nan).sum().item(),
+            )
+            print(torch.nonzero(~filter_nan).flatten())
+            print(torch.unique(batch_triplets[~filter_nan].flatten()))
+
             print(
                 "vector_fields:",
                 vector_fields[filter_nan].mean().item(),
                 vector_fields[filter_nan].std().item(),
             )
+            torch.save(vector_fields[filter_nan].cpu(), "vector_fields.pt")
+            # print(vector_fields[filter_nan])
+            print(
+                "S_st:", S_st[filter_nan].mean().item(), S_st[filter_nan].std().item()
+            )
+            print(S_st[filter_nan])
+            torch.save(S_st[filter_nan].cpu(), "S_st.pt")
+            """
 
             batch_triplets = batch_triplets[filter_nan]
             fields = (S_st[filter_nan, :, None, None] * vector_fields[filter_nan]).sum(
                 dim=1
             )
-            print("fields:", fields.mean().item(), fields.std().item())
+            # print("fields:", fields.mean().item(), fields.std().item())
             I = torch.eye(3, 3, device=cell.device)[None]
             S_t = I + scatter(
                 fields, batch_triplets, dim=0, dim_size=cell.shape[0], reduce="mean"
             )  # 1st order approx of matrix exp
             # cell_prime = torch.bmm(S_t, cell)
-            print("S_t:", S_t.mean().item(), S_t.std().item())
+            # print("S_t:", S_t.mean().item(), S_t.std().item())
 
             results.append(S_t)
 

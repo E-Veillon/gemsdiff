@@ -68,8 +68,8 @@ class GemsNetVAE(nn.Module):
 
         h, h_mat = self.encoder(z, geometry, emb)
 
-        print("h:", h.mean().item(), h.std().item())
-        print("h_mat:", h_mat.mean().item(), h.std().item())
+        # print("h:", h.mean().item(), h.std().item())
+        # print("h_mat:", h_mat.mean().item(), h.std().item())
 
         h_atoms = torch.cat((h, h_mat[geometry.batch]), dim=1)
 
