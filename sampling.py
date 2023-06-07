@@ -103,6 +103,3 @@ if __name__ == "__main__":
             with open(args.output, "w") as fp:
                 fp.write(cif)
 
-            break
-
-    torch.save(model.state_dict(), "model.pt")
