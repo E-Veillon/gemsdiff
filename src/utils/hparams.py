@@ -6,7 +6,7 @@ import copy
 
 @dataclass
 class Hparams:
-    batch_size: int = 128
+    batch_size: int = 1024
     epochs: int = 128
 
     lr: float = 1e-3
@@ -14,20 +14,9 @@ class Hparams:
     grad_clipping: float = 1.0
 
     knn: int = 32
-    features: int = 256
-
-    vector_fields_type: str = "grad"
-    vector_fields_normalize: bool = True
-    vector_fields_edges: str = ""
-    vector_fields_triplets: str = "n_ij|n_ik|angle"
-
-    model: str = "vae"
-
-    layers: int = 3
 
     diffusion_steps: int = 100
     x_betas: Tuple[float, float] = (1e-6, 2e-3)
-    rho_betas: Tuple[float, float] = (1e-5, 1e-1)
 
     @property
     def vector_fields(self):
@@ -56,10 +45,6 @@ class Hparams:
                 self.__dict__["x_betas"] = (value, self.__dict__["x_betas"][1])
             elif key == "x_betas_max":
                 self.__dict__["x_betas"] = (self.__dict__["x_betas"][0], value)
-            elif key == "rho_betas_min":
-                self.__dict__["rho_betas"] = (value, self.__dict__["rho_betas"][1])
-            elif key == "x_betas_max":
-                self.__dict__["rho_betas"] = (self.__dict__["rho_betas"][0], value)
             else:
                 self.__dict__[key] = value
 
@@ -70,6 +55,4 @@ class Hparams:
     def dict(self):
         result = copy.deepcopy(self.__dict__)
         result["x_betas_min"], result["x_betas_max"] = result["x_betas"]
-        result["rho_betas_min"], result["rho_betas_max"] = result["rho_betas"]
-        del result["x_betas"], result["rho_betas"]
         return result

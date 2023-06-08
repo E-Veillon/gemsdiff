@@ -25,8 +25,8 @@ class LatticeParametersLoss(nn.Module):
         source: Union[torch.FloatTensor, Tuple[torch.FloatTensor, torch.FloatTensor]],
         target: Union[torch.FloatTensor, Tuple[torch.FloatTensor, torch.FloatTensor]],
     ) -> torch.FloatTensor:
-        if isinstance(target, tuple):
-            param_src = self.lattice_scaler.normalise(source)
+        if isinstance(source, tuple):
+            param_src = source
         else:
             param_src = self.lattice_scaler.normalise_lattice(source)
 

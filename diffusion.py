@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from torch_geometric.loader import DataLoader
 from torch_scatter import scatter_mean
@@ -9,51 +8,44 @@ import pandas as pd
 import tqdm
 
 import matplotlib.pyplot as plt
-from ase.visualize.plot import plot_atoms
-from ase.io import write
-from ase.spacegroup import crystal
 
 import os
 import json
-import math
 import random
 import datetime
 
 from src.utils.scaler import LatticeScaler
-from src.utils.data import MP20, Carbon24, Perov5
+from src.utils.data import MP20, StructuresSampler
 from src.utils.hparams import Hparams
 from src.utils.metrics import get_metrics
 from src.model.gemsnet import GemsNetDiffusion
 from src.utils.video import make_video
 from src.utils.cif import make_cif
-from src.loss import OptimalTrajLoss, LatticeParametersLoss
 
 
 def get_dataloader(path: str, dataset: str, batch_size: int):
-    assert dataset in ["mp-20", "carbon-24", "perov-5"]
+    assert dataset in ["mp-20"]
 
     dataset_path = os.path.join(path, dataset)
     if dataset == "mp-20":
         train_set = MP20(dataset_path, "train")
         valid_set = MP20(dataset_path, "val")
         test_set = MP20(dataset_path, "test")
-    elif dataset == "carbon-24":
-        train_set = Carbon24(dataset_path, "train")
-        valid_set = Carbon24(dataset_path, "val")
-        test_set = Carbon24(dataset_path, "test")
-    elif dataset == "perov-5":
-        train_set = Perov5(dataset_path, "train")
-        valid_set = Perov5(dataset_path, "val")
-        test_set = Perov5(dataset_path, "test")
 
     loader_train = DataLoader(
-        train_set, batch_size=batch_size, shuffle=True, num_workers=4
+        train_set,
+        num_workers=4,
+        batch_sampler=StructuresSampler(train_set, batch_size, shuffle=True),
     )
     loader_valid = DataLoader(
-        valid_set, batch_size=batch_size, shuffle=True, num_workers=4
+        valid_set,
+        num_workers=4,
+        batch_sampler=StructuresSampler(valid_set, batch_size),
     )
     loader_test = DataLoader(
-        test_set, batch_size=batch_size, shuffle=True, num_workers=4
+        test_set,
+        num_workers=4,
+        batch_sampler=StructuresSampler(test_set, batch_size),
     )
 
     return loader_train, loader_valid, loader_test
@@ -261,12 +253,8 @@ if __name__ == "__main__":
 
     model = GemsNetDiffusion(
         lattice_scaler=scaler,
-        features=hparams.features,
         knn=hparams.knn,
-        num_blocks=hparams.layers,
-        vector_fields=hparams.vector_fields,
         x_betas=hparams.x_betas,
-        rho_betas=hparams.rho_betas,
         diffusion_steps=hparams.diffusion_steps,
     ).to(device)
 
@@ -294,7 +282,7 @@ if __name__ == "__main__":
             )
 
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), hparams.grad_clipping)
+            nn.utils.clip_grad_norm_(model.parameters(), hparams.grad_clipping)
             opt.step()
             ema.update()
 
