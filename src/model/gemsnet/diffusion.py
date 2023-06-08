@@ -29,12 +29,6 @@ class GemsNetDiffusion(nn.Module):
         features: int = 256,
         knn: int = 32,
         num_blocks: int = 3,
-        vector_fields: dict = {
-            "type": "grad",
-            "normalize": True,
-            "edges": [],
-            "triplets": ["n_ij", "n_ik", "angle"],
-        },
         x_betas: Tuple[float, float] = (1e-6, 2e-4),
         diffusion_steps: int = 100,
         limit_density: Tuple[float, float] = (0.1, 100.0),
@@ -42,6 +36,8 @@ class GemsNetDiffusion(nn.Module):
         super().__init__()
 
         self.knn = knn
+
+        self.lattice_scaler = lattice_scaler
 
         # energy_targets
         self.gnn = GemsNetT(
@@ -51,8 +47,6 @@ class GemsNetDiffusion(nn.Module):
             energy_targets=6,
             compute_energy=True,
             compute_forces=True,
-            compute_stress=False,
-            vector_fields=vector_fields,
         )
 
         self.loss_lattice_fn = LatticeParametersLoss(lattice_scaler=lattice_scaler)
@@ -158,7 +152,7 @@ class GemsNetDiffusion(nn.Module):
                 loss_pos,
                 loss_lattice,
                 x_t,
-                pred_rho,
+                self.lattice_scaler.denormalise(*pred_rho),
                 pred_x,
             )
 
@@ -167,88 +161,34 @@ class GemsNetDiffusion(nn.Module):
     def sample(
         self,
         x_t: torch.FloatTensor,
-        rho_t: torch.FloatTensor,
-        rho_0: torch.FloatTensor,
         t: int,
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
         if t == 0:
-            return x_t, rho_0
+            return x_t
 
         x_rand = torch.randn_like(x_t)
-        rho_rand = F.pad(torch.randn((rho_0.shape[0], 6), device=rho_0.device), (3, 0))
-        rho_rand[:, -1] *= 0.25
         x_prev = (x_t + self.x_sigma[t - 1] * x_rand) % 1.0
 
-        rho_t = self.rho_to_vect(rho_t)
-        rho_0 = self.rho_to_vect(rho_0)
-        rho_t[:, :3] = 0.0
-        rho_0[:, :3] = 0.0
-        rho_t1 = self.get_mu_rho_t(rho_t, rho_0, t)
+        return x_prev
 
-        rho_prev = self.vect_to_rho(rho_t1 + self.rho_sigma[t - 1] * rho_rand)
-
-        return x_prev, rho_prev
-
-    """
     @torch.no_grad()
     def sampling(
         self,
-        rho: torch.FloatTensor,
         z: torch.LongTensor,
         num_atoms: torch.LongTensor,
         return_history: bool = False,
         verbose: bool = False,
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
-        rho = self.random_rho_T(num_atoms.shape[0], device=z.device)
         x = torch.rand((z.shape[0], 3), device=z.device)
 
-        prev_rho = rho
-
-        rho_history, x_history = [], []
+        rho_history_lengths, rho_history_angles, x_history = [], [], []
         if return_history:
-            rho_history.append(rho)
-            x_history.append(x)
-
-        iterator = range(self.diffusion_steps - 1, -1, -1)
-        if verbose:
-            iterator = tqdm.tqdm(iterator, desc="sampling", leave=False)
-
-        for t in iterator:
-            emb = self.t_embedding(torch.full_like(z, fill_value=t))
-            pred_x, _, pred_rho = self.gemsnet(rho, x, z, num_atoms, emb)
-            pred_rho = self.limit_density(pred_rho, z, num_atoms, prev_rho)
-            prev_rho = rho
-            x, rho = self.sample(pred_x, None, pred_rho, t)
-
-            if return_history:
-                rho_history.append(rho)
-                x_history.append(x)
-
-        if return_history:
-            rho = torch.stack(rho_history, dim=0)
-            x = torch.stack(x_history, dim=0)
-
-        return rho, x
-    """
-
-    @torch.no_grad()
-    def sampling(
-        self,
-        # rho_gt: torch.FloatTensor,
-        z: torch.LongTensor,
-        num_atoms: torch.LongTensor,
-        return_history: bool = False,
-        verbose: bool = False,
-    ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
-        # rho_real = rho_gt
-        # rho_gt = self.rho_to_vect(rho_real)
-
-        rho = self.random_rho_T(num_atoms.shape[0], device=z.device)
-        x = torch.rand((z.shape[0], 3), device=z.device)
-
-        rho_history, x_history = [], []
-        if return_history:
-            rho_history.append(rho)
+            rho_history_lengths.append(
+                torch.ones((num_atoms.shape[0], 3), device=z.device)
+            )
+            rho_history_angles.append(
+                torch.full_like(rho_history_lengths[0], fill_value=90)
+            )
             x_history.append(x)
 
         t_list = list(range(self.diffusion_steps - 1, -1, -1))
@@ -257,84 +197,20 @@ class GemsNetDiffusion(nn.Module):
         else:
             iterator = t_list
 
-        # first_density = None
-
-        # random_density = self.get_density(rho, z, num_atoms)
-
-        # densities_mean = [random_density.mean().item()]
-        # pred_density = []
-        # print("density rand mean:", random_density.mean().item())
-        # print("density rand std:", random_density.std().item())
-
         for t in iterator:
-            emb = self.t_embedding(torch.full_like(z, fill_value=t))
-            pred_x, _, pred_rho = self.gemsnet(rho, x, z, num_atoms, emb)
-            # pred_rho = self.limit_density(pred_rho, z, num_atoms, prev_rho)
-            # if first_density is None:
-            #    first_density = self.get_density(pred_rho, z, num_atoms)
-            # print("density mean:", first_density.mean().item())
-            # print("density std:", first_density.std().item())
+            pred_x, _, pred_rho = self.forward(x, z, num_atoms)
 
-            # pred_density.append(self.get_density(pred_rho, z, num_atoms).mean().item())
-
-            # prev_rho = rho
-            # print("t", t)
-            # print(
-            #    "x_real\t", "\t".join([f"{x:.3f}" for x in rho_gt[:12, -1]]), flush=True
-            # )
-            x, rho = self.sample(pred_x, rho, pred_rho, t)
-
-            # densities = self.get_density(rho, z, num_atoms)
-            # densities_mean.append(densities.mean().item())
+            x = self.sample(pred_x, t)
 
             if return_history:
-                rho_history.append(rho)
+                lengths, angles = self.lattice_scaler.denormalise(*pred_rho)
+                rho_history_lengths.append(lengths)
+                rho_history_angles.append(angles)
                 x_history.append(x)
-            # exit(0)
-
-        """
-        scheduled_densities = []
-        for t in t_list:
-            t_batch = torch.full_like(num_atoms, fill_value=t)
-            rho_t = self.get_rho_t(rho, t_batch)
-            densities = self.get_density(rho_t, z, num_atoms)
-            scheduled_densities.append(densities.mean().item())
-
-        gt_density = self.get_density(rho_real, z, num_atoms)
-        print(
-            "density real\t",
-            "\t".join([f"{x:.3f}" for x in gt_density[:12]]),
-            flush=True,
-        )
-        print(
-            "density gen\t",
-            "\t".join([f"{x:.3f}" for x in first_density[:12]]),
-            flush=True,
-        )
-        print("distance:", (first_density - gt_density).pow(2).mean().item())
-        print("density mean:", first_density.mean().item())
-        print("density std:", first_density.std().item())
-
-        data = torch.load("/home/astrid/SCRATCH1/neurips/alignn/test.cif.pt")
-        from scipy.stats import wasserstein_distance
-
-        test_density = 1.66 * data["masses"] / data["volumes"]
-        emd = wasserstein_distance(densities.cpu().numpy(), test_density.cpu().numpy())
-        print("emd", emd)
-
-        import matplotlib.pyplot as plt
-
-        densities_mean = torch.tensor(densities_mean)
-        plt.plot([100] + t_list, densities_mean, label="generated")
-        plt.plot(t_list, scheduled_densities, label="scheduled")
-        plt.plot(t_list, pred_density, label="predicted final")
-        plt.legend()
-        plt.yscale("log")
-        plt.savefig("densities.png")
-        """
 
         if return_history:
-            rho = torch.stack(rho_history, dim=0)
+            rho_lengths = torch.stack(rho_history_lengths, dim=0)
+            rho_angles = torch.stack(rho_history_angles, dim=0)
             x = torch.stack(x_history, dim=0)
 
-        return rho, x
+        return (rho_lengths, rho_angles), x

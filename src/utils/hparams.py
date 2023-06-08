@@ -7,7 +7,7 @@ import copy
 @dataclass
 class Hparams:
     batch_size: int = 1024
-    epochs: int = 128
+    epochs: int = 1  # 128
 
     lr: float = 1e-3
     beta1: float = 0.9
@@ -55,4 +55,5 @@ class Hparams:
     def dict(self):
         result = copy.deepcopy(self.__dict__)
         result["x_betas_min"], result["x_betas_max"] = result["x_betas"]
+        del result["x_betas"]
         return result

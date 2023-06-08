@@ -57,9 +57,9 @@ def make_video(
     max_workers: int = torch.get_num_threads(),
 ) -> torch.ByteTensor:
     n_struct = num_atoms.shape[0]
-    idx = torch.arange(0, rho.shape[0], step=step, device=rho.device)
+    idx = torch.arange(0, num_atoms.shape[0], step=step, device=num_atoms.device)
 
-    batch = torch.arange(num_atoms.shape[0], device=rho.device).repeat_interleave(
+    batch = torch.arange(num_atoms.shape[0], device=num_atoms.device).repeat_interleave(
         num_atoms
     )
 

@@ -1,7 +1,7 @@
 import torch
 from torch_scatter import scatter_mean
 
-from typing import Dict
+from typing import Dict, Tuple
 
 from src.utils.scaler import LatticeScaler
 
@@ -9,14 +9,15 @@ from src.utils.scaler import LatticeScaler
 @torch.no_grad()
 def get_metrics(
     rho: torch.FloatTensor,
-    rho_prime: torch.FloatTensor,
+    rho_prime: Tuple[torch.FloatTensor, torch.FloatTensor],
     x: torch.FloatTensor,
     x_prime: torch.FloatTensor,
     num_atoms: torch.LongTensor,
     by_structure: bool = False,
 ) -> Dict[str, torch.FloatTensor]:
     rho = rho.cpu()
-    rho_prime = rho_prime.cpu()
+    if rho_prime is not None:
+        rho_prime = (rho_prime[0].cpu(), rho_prime[1].cpu())
     x = x.cpu() % 1.0
     x_prime = x_prime.cpu() % 1.0
     num_atoms = num_atoms.cpu()
@@ -77,21 +78,22 @@ def get_metrics(
         mae_pos = error_pos.mean().detach()
 
     rho_lengths, rho_angles = LatticeScaler.get_lattices_parameters(rho)
-    rho_prime_lengths, rho_prime_angles = LatticeScaler.get_lattices_parameters(
-        rho_prime
-    )
+    if rho_prime is not None:
+        rho_prime_lengths, rho_prime_angles = rho_prime
 
-    error_lengths = (rho_lengths - rho_prime_lengths).abs()
-    error_angles = (rho_angles - rho_prime_angles).abs()
-    if by_structure:
-        mae_lengths = error_lengths.detach()
-        mae_angles = error_angles.detach()
-    else:
-        mae_lengths = error_lengths.mean().detach()
-        mae_angles = error_angles.mean().detach()
+        error_lengths = (rho_lengths - rho_prime_lengths).abs()
+        error_angles = (rho_angles - rho_prime_angles).abs()
+        if by_structure:
+            mae_lengths = error_lengths.detach()
+            mae_angles = error_angles.detach()
+        else:
+            mae_lengths = error_lengths.mean().detach()
+            mae_angles = error_angles.mean().detach()
 
-    return {
-        "mae_pos": mae_pos,
-        "mae_lengths": mae_lengths,
-        "mae_angles": mae_angles,
-    }
+        return {
+            "mae_pos": mae_pos,
+            "mae_lengths": mae_lengths,
+            "mae_angles": mae_angles,
+        }
+
+    return {"mae_pos": mae_pos}

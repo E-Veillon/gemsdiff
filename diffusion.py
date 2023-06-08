@@ -37,16 +37,8 @@ def get_dataloader(path: str, dataset: str, batch_size: int):
         num_workers=4,
         batch_sampler=StructuresSampler(train_set, batch_size, shuffle=True),
     )
-    loader_valid = DataLoader(
-        valid_set,
-        num_workers=4,
-        batch_sampler=StructuresSampler(valid_set, batch_size),
-    )
-    loader_test = DataLoader(
-        test_set,
-        num_workers=4,
-        batch_sampler=StructuresSampler(test_set, batch_size),
-    )
+    loader_valid = DataLoader(valid_set, num_workers=4, batch_size=128)
+    loader_test = DataLoader(test_set, num_workers=4, batch_size=128)
 
     return loader_train, loader_valid, loader_test
 
@@ -59,8 +51,9 @@ def compute_metrics(model, dataloader, desc_bar):
 
     list_t = []
     list_rho = []
+    list_rho_pred_lengths = []
+    list_rho_pred_angles = []
     list_rho_pred = []
-    list_rho_t = []
     list_x = []
     list_x_pred = []
     list_x_t = []
@@ -81,7 +74,6 @@ def compute_metrics(model, dataloader, desc_bar):
             loss,
             loss_pos,
             loss_lattice,
-            rho_t,
             x_t,
             pred_rho,
             pred_x,
@@ -96,8 +88,8 @@ def compute_metrics(model, dataloader, desc_bar):
 
         list_t.append(t_idx[: batch.num_atoms.shape[0]])
         list_rho.append(batch.cell)
-        list_rho_pred.append(pred_rho)
-        list_rho_t.append(rho_t)
+        list_rho_pred_lengths.append(pred_rho[0])
+        list_rho_pred_angles.append(pred_rho[1])
         list_x.append(batch.pos)
         list_x_pred.append(pred_x)
         list_x_t.append(x_t)
@@ -115,8 +107,10 @@ def compute_metrics(model, dataloader, desc_bar):
 
     list_t = torch.cat(list_t, dim=0)
     list_rho = torch.cat(list_rho, dim=0)
-    list_rho_pred = torch.cat(list_rho_pred, dim=0)
-    list_rho_t = torch.cat(list_rho_t, dim=0)
+    print(len(list_rho_pred))
+    list_rho_pred_lengths = torch.cat(list_rho_pred_lengths, dim=0)
+    list_rho_pred_angles = torch.cat(list_rho_pred_angles, dim=0)
+    list_rho_pred = (list_rho_pred_lengths, list_rho_pred_angles)
     list_x = torch.cat(list_x, dim=0)
     list_x_pred = torch.cat(list_x_pred, dim=0)
     list_x_t = torch.cat(list_x_t, dim=0)
@@ -132,7 +126,7 @@ def compute_metrics(model, dataloader, desc_bar):
     )
     metrics_gt = get_metrics(
         list_rho,
-        list_rho_t,
+        None,
         list_x,
         list_x_t,
         list_num_atoms,
@@ -152,12 +146,6 @@ def compute_metrics(model, dataloader, desc_bar):
     metrics_gt["mae_pos_by_t"] = scatter_mean(
         metrics_gt["mae_pos"], list_t, dim=0, dim_size=size
     )
-    metrics_gt["mae_lengths_by_t"] = scatter_mean(
-        metrics_gt["mae_lengths"].mean(dim=1), list_t, dim=0, dim_size=size
-    )
-    metrics_gt["mae_angles_by_t"] = scatter_mean(
-        metrics_gt["mae_angles"].mean(dim=1), list_t, dim=0, dim_size=size
-    )
 
     t = torch.arange(0, metrics["mae_pos_by_t"].shape[0]) * step
 
@@ -168,8 +156,6 @@ def compute_metrics(model, dataloader, desc_bar):
 
     metrics_gt["t"] = t
     metrics_gt["mae_pos"] = metrics_gt["mae_pos"]
-    metrics_gt["mae_lengths"] = metrics_gt["mae_lengths"]
-    metrics_gt["mae_angles"] = metrics_gt["mae_angles"]
 
     return loss, metrics, metrics_gt
 
@@ -181,12 +167,10 @@ def add_tensorboard(writer, loss, metrics, metrics_gt, path, batch_idx):
     writer.add_figure(f"{path}/mae_pos", plt.gcf(), batch_idx)
     plt.close()
     plt.scatter(metrics["t"], metrics["mae_lengths_by_t"], label="gnn")
-    plt.scatter(metrics_gt["t"], metrics_gt["mae_lengths_by_t"], label="no action")
     plt.legend()
     writer.add_figure(f"{path}/mae_lengths", plt.gcf(), batch_idx)
     plt.close()
     plt.scatter(metrics["t"], metrics["mae_angles_by_t"], label="gnn")
-    plt.scatter(metrics_gt["t"], metrics_gt["mae_angles_by_t"], label="no action")
     plt.legend()
     writer.add_figure(f"{path}/mae_angles", plt.gcf(), batch_idx)
     plt.close()
@@ -330,18 +314,17 @@ if __name__ == "__main__":
         max_atoms = batch.num_atoms.sum()
         batch.pos = batch.pos[:max_atoms]
         batch.z = batch.z[:max_atoms]
-        break
 
     rho, x = model.sampling(batch.z, batch.num_atoms, return_history=True, verbose=True)
 
-    cif = make_cif(rho[-1], x[-1], batch.z, batch.num_atoms)
+    cif = make_cif((rho[0][-1], rho[1][-1]), x[-1], batch.z, batch.num_atoms)
 
     with open(os.path.join(log_dir, "sampling.cif"), "w") as fp:
         fp.write(cif)
 
-    video_tensor = make_video(rho, x, batch.z, batch.num_atoms, step=32)
+    # video_tensor = make_video(rho, x, batch.z, batch.num_atoms, step=32)
 
-    writer.add_video("sampling", video_tensor)
+    # writer.add_video("sampling", video_tensor)
 
     loss, metrics, metrics_gt = compute_metrics(model, loader_test, "test")
     add_tensorboard(writer, loss, metrics, metrics_gt, "test", batch_idx)

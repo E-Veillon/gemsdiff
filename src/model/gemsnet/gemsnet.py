@@ -116,17 +116,10 @@ class GemsNetT(torch.nn.Module):
         rbf: dict = {"name": "gaussian"},
         envelope: dict = {"name": "polynomial", "exponent": 5},
         cbf: dict = {"name": "spherical_harmonics"},
-        vector_fields: dict = {
-            "type": "grad",
-            "edges": [],
-            "triplets": ["n_ij", "n_ik", "angle"],
-            "normalize": True,
-        },
         z_input: Union[str, int] = "embedding",
         energy_targets: int = 1,
         compute_energy: bool = True,
         compute_forces: bool = True,
-        compute_stress: bool = True,
         output_init: str = "HeOrthogonal",
         activation: str = "swish",
         scale_file: Optional[str] = None,
@@ -197,10 +190,6 @@ class GemsNetT(torch.nn.Module):
 
         self.compute_energy = compute_energy
         self.compute_forces = compute_forces
-        self.compute_stress = compute_stress
-
-        if self.compute_stress:
-            self.vector_fields = make_vector_fields(vector_fields)
 
         self.output_block = (
             self.compute_energy or self.compute_forces or self.compute_stress
@@ -241,9 +230,6 @@ class GemsNetT(torch.nn.Module):
 
         self.int_blocks = torch.nn.ModuleList(int_blocks)
 
-        num_vector_fields = (
-            0 if not hasattr(self, "vector_fields") else self.vector_fields.triplets_dim
-        )
         if self.output_block:
             out_blocks = []
             for i in range(num_blocks + 1):
