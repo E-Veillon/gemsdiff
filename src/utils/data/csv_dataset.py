@@ -19,6 +19,8 @@ import warnings
 import os
 import json
 
+from .dataset import StructuresList
+
 
 def process_cif(args):
     (cif, warning_queue) = args
@@ -53,7 +55,7 @@ def process_cif(args):
     return data
 
 
-class CSVDataset(InMemoryDataset, metaclass=ABCMeta):
+class CSVDataset(InMemoryDataset, StructuresList, metaclass=ABCMeta):
     def __init__(
         self,
         root: str,
@@ -85,6 +87,9 @@ class CSVDataset(InMemoryDataset, metaclass=ABCMeta):
     @abstractmethod
     def process(self):
         pass
+
+    def get_num_atoms(self) -> torch.LongTensor:
+        return torch.from_numpy(self.num_atoms)
 
     def load_hdf5(self, hdf5_file: str) -> None:
         f = h5py.File(hdf5_file, "r")
