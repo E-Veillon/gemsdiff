@@ -9,8 +9,10 @@ import math
 import warnings
 
 from src.utils.scaler import LatticeScaler
+from src.utils.geometry import Geometry
 from src.loss import OptimalTrajLoss, LatticeParametersLoss
 from .vae import GemsNetVAE
+from .gemsnet import GemsNetT
 
 # import scipy.linalg
 
@@ -84,6 +86,27 @@ class GemsNetDiffusion(nn.Module):
 
         self.t_embedding = TEmbedding(emb_size_atom, diffusion_steps)
 
+        # energy_targets
+        self.knn = knn
+        self.gnn = GemsNetT(
+            features,
+            num_blocks=num_blocks,
+            energy_targets=1,
+            compute_energy=False,
+            compute_forces=True,
+            compute_stress=True,
+            vector_fields=vector_fields,
+        )
+        """
+        self.decoder = GemsNetT(
+            features,
+            num_blocks=num_blocks,
+            z_input=emb_size_atom + global_features,
+            compute_energy=False,
+            compute_forces=True,
+            compute_stress=True,
+        )
+
         self.gemsnet = GemsNetVAE(
             features=features,
             knn=knn,
@@ -92,13 +115,15 @@ class GemsNetDiffusion(nn.Module):
             global_features=global_features,
             emb_size_atom=emb_size_atom,
         )
+        """
         self.loss_lattice_fn = LatticeParametersLoss(lattice_scaler=lattice_scaler)
         # self.loss_pos_fn = TrajLoss()
         self.loss_pos_fn = OptimalTrajLoss(center=True, euclidian=True, distance="l1")
 
         (self.density_min, self.density_max) = limit_density
         self.x_betas = nn.Parameter(
-            torch.linspace(x_betas[0], x_betas[1], diffusion_steps), requires_grad=False
+            torch.linspace(x_betas[0], x_betas[1], diffusion_steps),
+            requires_grad=False,
         )
         self.x_sigma = nn.Parameter(self.x_betas.sqrt(), requires_grad=False)
         self.x_alphas = nn.Parameter(1 - self.x_betas, requires_grad=False)
@@ -208,9 +233,6 @@ class GemsNetDiffusion(nn.Module):
         mask = t == 0
         mu[mask] = x_0[mask]
 
-        # print("x_0\t", "\t".join([f"{x:.3f}" for x in x_0[:12, -1]]), flush=True)
-        # print("x_t\t", "\t".join([f"{x:.3f}" for x in x_t[:12, -1]]), flush=True)
-        # print("mu\t", "\t".join([f"{x:.3f}" for x in mu[:12, -1]]), flush=True)
         return mu
 
     def get_rho_t(
@@ -232,7 +254,10 @@ class GemsNetDiffusion(nn.Module):
         return self.vect_to_rho(x_t)  # , self.vect_to_rho(mu_t)
 
     def get_x_t(
-        self, x: torch.FloatTensor, t: torch.LongTensor, num_atoms: torch.LongTensor
+        self,
+        x: torch.FloatTensor,
+        t: torch.LongTensor,
+        num_atoms: torch.LongTensor,
     ) -> torch.FloatTensor:
         batch = torch.arange(
             num_atoms.shape[0], dtype=torch.long, device=x.device
@@ -246,7 +271,10 @@ class GemsNetDiffusion(nn.Module):
         return (x + traj) % 1.0
 
     def get_density(
-        self, rho: torch.FloatTensor, z: torch.LongTensor, num_atoms: torch.LongTensor
+        self,
+        rho: torch.FloatTensor,
+        z: torch.LongTensor,
+        num_atoms: torch.LongTensor,
     ) -> torch.FloatTensor:
         batch = torch.arange(num_atoms.shape[0], device=rho.device).repeat_interleave(
             num_atoms
@@ -271,6 +299,32 @@ class GemsNetDiffusion(nn.Module):
             warnings.warn("[Langevin dynamics] density constraint reached")
 
         return rho
+
+    def forward(
+        self,
+        x: torch.FloatTensor,
+        z: torch.LongTensor,
+        num_atoms: torch.LongTensor,
+    ) -> torch.FloatTensor:
+        eye = (
+            torch.eye(3, device=num_atoms.device)
+            .unsqueeze(0)
+            .repeat(num_atoms.shape[0], 1, 1)
+        )
+
+        geometry = Geometry(
+            eye,
+            num_atoms,
+            x,
+            knn=self.knn,
+            triplets=False,
+            symetric=True,
+            compute_reverse_idx=True,
+        )
+
+        _, x_prime, x_traj, rho_prime = self.gnn(z, geometry)
+
+        return x_prime, x_traj, rho_prime
 
     def get_loss(
         self,
@@ -302,7 +356,7 @@ class GemsNetDiffusion(nn.Module):
 
         emb = self.t_embedding(t)
 
-        pred_x, pred_traj, pred_rho = self.gemsnet(rho_t, x_t, z, num_atoms, emb)
+        pred_x, pred_traj, pred_rho = self.forward(x_t, z, num_atoms)
 
         loss_lattice = self.loss_lattice_fn(pred_rho, rho)
         loss_pos = self.loss_pos_fn(rho, x, x_t, pred_traj, num_atoms)
@@ -346,60 +400,14 @@ class GemsNetDiffusion(nn.Module):
 
         return x_prev, rho_prev
 
-    """
     @torch.no_grad()
     def sampling(
         self,
-        rho: torch.FloatTensor,
         z: torch.LongTensor,
         num_atoms: torch.LongTensor,
         return_history: bool = False,
         verbose: bool = False,
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
-        rho = self.random_rho_T(num_atoms.shape[0], device=z.device)
-        x = torch.rand((z.shape[0], 3), device=z.device)
-
-        prev_rho = rho
-
-        rho_history, x_history = [], []
-        if return_history:
-            rho_history.append(rho)
-            x_history.append(x)
-
-        iterator = range(self.diffusion_steps - 1, -1, -1)
-        if verbose:
-            iterator = tqdm.tqdm(iterator, desc="sampling", leave=False)
-
-        for t in iterator:
-            emb = self.t_embedding(torch.full_like(z, fill_value=t))
-            pred_x, _, pred_rho = self.gemsnet(rho, x, z, num_atoms, emb)
-            pred_rho = self.limit_density(pred_rho, z, num_atoms, prev_rho)
-            prev_rho = rho
-            x, rho = self.sample(pred_x, None, pred_rho, t)
-
-            if return_history:
-                rho_history.append(rho)
-                x_history.append(x)
-
-        if return_history:
-            rho = torch.stack(rho_history, dim=0)
-            x = torch.stack(x_history, dim=0)
-
-        return rho, x
-    """
-
-    @torch.no_grad()
-    def sampling(
-        self,
-        # rho_gt: torch.FloatTensor,
-        z: torch.LongTensor,
-        num_atoms: torch.LongTensor,
-        return_history: bool = False,
-        verbose: bool = False,
-    ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
-        # rho_real = rho_gt
-        # rho_gt = self.rho_to_vect(rho_real)
-
         rho = self.random_rho_T(num_atoms.shape[0], device=z.device)
         x = torch.rand((z.shape[0], 3), device=z.device)
 
@@ -414,81 +422,14 @@ class GemsNetDiffusion(nn.Module):
         else:
             iterator = t_list
 
-        # first_density = None
-
-        # random_density = self.get_density(rho, z, num_atoms)
-
-        # densities_mean = [random_density.mean().item()]
-        # pred_density = []
-        # print("density rand mean:", random_density.mean().item())
-        # print("density rand std:", random_density.std().item())
-
         for t in iterator:
             emb = self.t_embedding(torch.full_like(z, fill_value=t))
-            pred_x, _, pred_rho = self.gemsnet(rho, x, z, num_atoms, emb)
-            # pred_rho = self.limit_density(pred_rho, z, num_atoms, prev_rho)
-            # if first_density is None:
-            #    first_density = self.get_density(pred_rho, z, num_atoms)
-            # print("density mean:", first_density.mean().item())
-            # print("density std:", first_density.std().item())
-
-            # pred_density.append(self.get_density(pred_rho, z, num_atoms).mean().item())
-
-            # prev_rho = rho
-            # print("t", t)
-            # print(
-            #    "x_real\t", "\t".join([f"{x:.3f}" for x in rho_gt[:12, -1]]), flush=True
-            # )
+            pred_x, _, pred_rho = self.gemsnet(x, z, num_atoms, emb)
             x, rho = self.sample(pred_x, rho, pred_rho, t)
-
-            # densities = self.get_density(rho, z, num_atoms)
-            # densities_mean.append(densities.mean().item())
 
             if return_history:
                 rho_history.append(rho)
                 x_history.append(x)
-            # exit(0)
-
-        """
-        scheduled_densities = []
-        for t in t_list:
-            t_batch = torch.full_like(num_atoms, fill_value=t)
-            rho_t = self.get_rho_t(rho, t_batch)
-            densities = self.get_density(rho_t, z, num_atoms)
-            scheduled_densities.append(densities.mean().item())
-
-        gt_density = self.get_density(rho_real, z, num_atoms)
-        print(
-            "density real\t",
-            "\t".join([f"{x:.3f}" for x in gt_density[:12]]),
-            flush=True,
-        )
-        print(
-            "density gen\t",
-            "\t".join([f"{x:.3f}" for x in first_density[:12]]),
-            flush=True,
-        )
-        print("distance:", (first_density - gt_density).pow(2).mean().item())
-        print("density mean:", first_density.mean().item())
-        print("density std:", first_density.std().item())
-
-        data = torch.load("/home/astrid/SCRATCH1/neurips/alignn/test.cif.pt")
-        from scipy.stats import wasserstein_distance
-
-        test_density = 1.66 * data["masses"] / data["volumes"]
-        emd = wasserstein_distance(densities.cpu().numpy(), test_density.cpu().numpy())
-        print("emd", emd)
-
-        import matplotlib.pyplot as plt
-
-        densities_mean = torch.tensor(densities_mean)
-        plt.plot([100] + t_list, densities_mean, label="generated")
-        plt.plot(t_list, scheduled_densities, label="scheduled")
-        plt.plot(t_list, pred_density, label="predicted final")
-        plt.legend()
-        plt.yscale("log")
-        plt.savefig("densities.png")
-        """
 
         if return_history:
             rho = torch.stack(rho_history, dim=0)

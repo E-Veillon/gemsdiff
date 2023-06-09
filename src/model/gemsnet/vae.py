@@ -48,30 +48,16 @@ class GemsNetVAE(nn.Module):
 
     def forward(
         self,
-        cell: torch.FloatTensor,
         x: torch.FloatTensor,
         z: torch.LongTensor,
         num_atoms: torch.LongTensor,
         emb: torch.FloatTensor = None,
     ) -> torch.FloatTensor:
-        eye = torch.eye(3, device=cell.device).unsqueeze(0).repeat(cell.shape[0], 1, 1)
-
-        geometry = Geometry(
-            cell,
-            num_atoms,
-            x,
-            knn=self.knn,
-            triplets=False,
-            symetric=True,
-            compute_reverse_idx=True,
+        eye = (
+            torch.eye(3, device=num_atoms.device)
+            .unsqueeze(0)
+            .repeat(num_atoms.shape[0], 1, 1)
         )
-
-        h, h_mat = self.encoder(z, geometry, emb)
-
-        # print("h:", h.mean().item(), h.std().item())
-        # print("h_mat:", h_mat.mean().item(), h.std().item())
-
-        h_atoms = torch.cat((h, h_mat[geometry.batch]), dim=1)
 
         geometry = Geometry(
             eye,
@@ -82,6 +68,10 @@ class GemsNetVAE(nn.Module):
             symetric=True,
             compute_reverse_idx=True,
         )
+
+        h, h_mat = self.encoder(z, geometry, emb)
+
+        h_atoms = torch.cat((h, h_mat[geometry.batch]), dim=1)
 
         _, x_prime, x_traj, rho_prime = self.decoder(h_atoms, geometry)
 

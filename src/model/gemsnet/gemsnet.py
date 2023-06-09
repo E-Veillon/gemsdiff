@@ -275,7 +275,10 @@ class GemsNetT(torch.nn.Module):
         ]
 
     def forward(
-        self, z: torch.LongTensor, geometry: Geometry, emb: torch.FloatTensor = None
+        self,
+        z: torch.LongTensor,
+        geometry: Geometry,
+        emb: torch.FloatTensor = None,
     ):
         cell = geometry.cell
         x = geometry.x
@@ -450,7 +453,11 @@ class GemsNetT(torch.nn.Module):
             # print("fields:", fields.mean().item(), fields.std().item())
             I = torch.eye(3, 3, device=cell.device)[None]
             S_t = I + scatter(
-                fields, batch_triplets, dim=0, dim_size=cell.shape[0], reduce="mean"
+                fields,
+                batch_triplets,
+                dim=0,
+                dim_size=cell.shape[0],
+                reduce="mean",
             )  # 1st order approx of matrix exp
             # cell_prime = torch.bmm(S_t, cell)
             # print("S_t:", S_t.mean().item(), S_t.std().item())

@@ -1,9 +1,10 @@
 .vscode
 __pycache__
-runs
-data
+runs/**
+data/**
 *.png
 *.csv
 *.svg
 *.json
 gemnet_
+start.sh
