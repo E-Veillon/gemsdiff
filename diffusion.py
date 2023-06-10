@@ -126,7 +126,6 @@ if __name__ == "__main__":
         features=hparams.features,
         knn=hparams.knn,
         num_blocks=hparams.layers,
-        vector_fields=hparams.vector_fields,
         x_betas=hparams.x_betas,
         diffusion_steps=hparams.diffusion_steps,
     ).to(device)

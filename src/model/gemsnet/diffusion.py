@@ -19,12 +19,6 @@ class GemsNetDiffusion(nn.Module):
         features: int = 256,
         knn: int = 32,
         num_blocks: int = 3,
-        vector_fields: dict = {
-            "type": "grad",
-            "normalize": True,
-            "edges": [],
-            "triplets": ["n_ij", "n_ik", "angle"],
-        },
         x_betas: Tuple[float, float] = (1e-6, 2e-4),
         diffusion_steps: int = 100,
     ):
@@ -39,7 +33,6 @@ class GemsNetDiffusion(nn.Module):
             compute_energy=False,
             compute_forces=True,
             compute_stress=True,
-            vector_fields=vector_fields,
         )
         self.loss_lattice_fn = LatticeParametersLoss(lattice_scaler=lattice_scaler)
         self.loss_pos_fn = OptimalTrajLoss(center=True, euclidian=True, distance="l1")

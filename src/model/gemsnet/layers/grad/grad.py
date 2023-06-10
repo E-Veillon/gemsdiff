@@ -84,91 +84,7 @@ class Grad(nn.Module):
 
         diff_g = torch.einsum("bi,bijk->bjk", diff_u, diff_g_u)
 
-        diff_x = torch.bmm(diff_u.unsqueeze(1), rho_prime).squeeze(1)
-
-        diff_x_i = -diff_x
-        diff_x_j = diff_x
-
-        return diff_g, diff_x_i, diff_x_j
-
-    def grad_distance_sym(self, rho, x_ij, g=None):
-        if g is None:
-            rho_prime = rho
-        else:
-            rho_prime = torch.bmm((g + torch.transpose(g, 1, 2)), rho)
-
-        u = torch.bmm(rho_prime, x_ij.unsqueeze(2)).squeeze(2)
-
-        diff_u = self.jacobian_norm(u)
-
-        diff_g_u = self.jacobian_m(torch.bmm(rho, x_ij.unsqueeze(2)).squeeze(2))
-
-        diff_g_demi = torch.einsum("bi,bijk->bjk", diff_u, diff_g_u)
-
-        diff_g = diff_g_demi + torch.transpose(diff_g_demi, 1, 2)
-
-        diff_x = torch.bmm(diff_u.unsqueeze(1), rho_prime).squeeze(1)
-
-        diff_x_i = -diff_x
-        diff_x_j = diff_x
-
-        return diff_g, diff_x_i, diff_x_j
-
-    def grad_area(self, rho, x_ij, x_ik, g=None):
-        if g is None:
-            rho_prime = rho
-        else:
-            rho_prime = torch.bmm(g, rho)
-
-        u = torch.bmm(rho_prime, x_ij.unsqueeze(2)).squeeze(2)
-        v = torch.bmm(rho_prime, x_ik.unsqueeze(2)).squeeze(2)
-
-        diff_u, diff_v = self.jacobian_cross_norm(u, v)
-        diff_g_u = self.jacobian_m(torch.bmm(rho, x_ij.unsqueeze(2)).squeeze(2))
-        diff_g_v = self.jacobian_m(torch.bmm(rho, x_ik.unsqueeze(2)).squeeze(2))
-
-        diff_g = 0.5 * (
-            torch.einsum("bi,bijk->bjk", diff_u, diff_g_u)
-            + torch.einsum("bi,bijk->bjk", diff_v, diff_g_v)
-        )
-        diff_vect = rho_prime
-
-        diff_x_i = -0.5 * (
-            torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-            + torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
-        )
-        diff_x_j = 0.5 * torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-        diff_x_k = 0.5 * torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
-
-        return diff_g, diff_x_i, diff_x_j, diff_x_k
-
-    def grad_area_sym(self, rho, x_ij, x_ik, g=None):
-        if g is None:
-            rho_prime = rho
-        else:
-            rho_prime = torch.bmm((g + torch.transpose(g, 1, 2)), rho)
-
-        u = torch.bmm(rho_prime, x_ij.unsqueeze(2)).squeeze(2)
-        v = torch.bmm(rho_prime, x_ik.unsqueeze(2)).squeeze(2)
-        diff_u, diff_v = self.jacobian_cross_norm(u, v)
-        diff_g_u = self.jacobian_m(torch.bmm(rho, x_ij.unsqueeze(2)).squeeze(2))
-        diff_g_v = self.jacobian_m(torch.bmm(rho, x_ik.unsqueeze(2)).squeeze(2))
-
-        diff_g_demi = torch.einsum("bi,bijk->bjk", diff_u, diff_g_u) + torch.einsum(
-            "bi,bijk->bjk", diff_v, diff_g_v
-        )
-        diff_g = 0.5 * (diff_g_demi + torch.transpose(diff_g_demi, 1, 2))
-
-        diff_vect = rho_prime
-
-        diff_x_i = -0.5 * (
-            torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-            + torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
-        )
-        diff_x_j = 0.5 * torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-        diff_x_k = 0.5 * torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
-
-        return diff_g, diff_x_i, diff_x_j, diff_x_k
+        return diff_g
 
     def grad_angle(self, rho, x_ij, x_ik, g=None):
         if g is None:
@@ -187,41 +103,25 @@ class Grad(nn.Module):
         diff_g = torch.einsum("bi,bijk->bjk", diff_u, diff_g_u) + torch.einsum(
             "bi,bijk->bjk", diff_v, diff_g_v
         )
-        diff_vect = rho_prime
 
-        diff_x_i = -(
-            torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-            + torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
+        return diff_g
+
+    @property
+    def triplets_dim(self):
+        return 3
+
+    def forward(
+        self,
+        cell: torch.FloatTensor,
+        batch_triplets: torch.LongTensor,
+        e_ij: torch.FloatTensor,
+        e_ik: torch.FloatTensor,
+    ):
+        return torch.stack(
+            (
+                self.grad_distance(cell[batch_triplets], e_ij),
+                self.grad_distance(cell[batch_triplets], e_ik),
+                self.grad_angle(cell[batch_triplets], e_ij, e_ik),
+            ),
+            dim=1,
         )
-        diff_x_j = torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-        diff_x_k = torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
-
-        return diff_g, diff_x_i, diff_x_j, diff_x_k
-
-    def grad_angle_sym(self, rho, x_ij, x_ik, g=None):
-        if g is None:
-            rho_prime = rho
-        else:
-            rho_prime = torch.bmm((g + torch.transpose(g, 1, 2)), rho)
-
-        u = torch.bmm(rho_prime, x_ij.unsqueeze(2)).squeeze(2)
-        v = torch.bmm(rho_prime, x_ik.unsqueeze(2)).squeeze(2)
-        diff_u, diff_v = self.jacobian_angle_vector(u, v)
-        diff_g_u = self.jacobian_m(torch.bmm(rho, x_ij.unsqueeze(2)).squeeze(2))
-        diff_g_v = self.jacobian_m(torch.bmm(rho, x_ik.unsqueeze(2)).squeeze(2))
-
-        diff_g_demi = torch.einsum("bi,bijk->bjk", diff_u, diff_g_u) + torch.einsum(
-            "bi,bijk->bjk", diff_v, diff_g_v
-        )
-        diff_g = diff_g_demi + torch.transpose(diff_g_demi, 1, 2)
-
-        diff_vect = rho_prime
-
-        diff_x_i = -(
-            torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-            + torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
-        )
-        diff_x_j = torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-        diff_x_k = torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
-
-        return diff_g, diff_x_i, diff_x_j, diff_x_k

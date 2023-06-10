@@ -7,7 +7,7 @@ import copy
 @dataclass
 class Hparams:
     batch_size: int = 128
-    epochs: int = 1
+    epochs: int = 128
 
     lr: float = 1e-3
     beta1: float = 0.9
@@ -16,29 +16,10 @@ class Hparams:
     knn: int = 32
     features: int = 256
 
-    vector_fields_type: str = "grad"
-    vector_fields_normalize: bool = True
-    vector_fields_edges: str = ""
-    vector_fields_triplets: str = "n_ij|n_ik|angle"
-
     layers: int = 3
 
     diffusion_steps: int = 100
     x_betas: Tuple[float, float] = (1e-6, 2e-3)
-
-    @property
-    def vector_fields(self):
-        def split(s, delimiter):
-            if len(s) > 0:
-                return s.split(delimiter)
-            return []
-
-        return {
-            "type": self.vector_fields_type,
-            "normalize": self.vector_fields_normalize,
-            "edges": split(self.vector_fields_edges, "|"),
-            "triplets": split(self.vector_fields_triplets, "|"),
-        }
 
     def from_json(self, file_name):
         with open(file_name, "r") as fp:

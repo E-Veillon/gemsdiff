@@ -11,7 +11,7 @@ from .layers.embedding_block import AtomEmbedding, EdgeEmbedding
 from .layers.interaction_block import InteractionBlockTripletsOnly
 from .layers.radial_basis import RadialBasis
 from .layers.spherical_basis import CircularBasisLayer
-from .layers.grad.vector_fields import make_vector_fields
+from .layers.grad import Grad
 
 from src.utils.geometry import Geometry
 from crystallographic_graph import sparse_meshgrid
@@ -38,12 +38,6 @@ class GemsNetT(torch.nn.Module):
         rbf: dict = {"name": "gaussian"},
         envelope: dict = {"name": "polynomial", "exponent": 5},
         cbf: dict = {"name": "spherical_harmonics"},
-        vector_fields: dict = {
-            "type": "grad",
-            "edges": [],
-            "triplets": ["n_ij", "n_ik", "angle"],
-            "normalize": True,
-        },
         z_input: Union[str, int] = "embedding",
         energy_targets: int = 1,
         compute_energy: bool = True,
@@ -121,7 +115,7 @@ class GemsNetT(torch.nn.Module):
         self.compute_stress = compute_stress
 
         if self.compute_stress:
-            self.vector_fields = make_vector_fields(vector_fields)
+            self.vector_fields = Grad()
 
         self.output_block = (
             self.compute_energy or self.compute_forces or self.compute_stress
