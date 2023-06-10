@@ -7,7 +7,7 @@ LICENSE file in the root directory of this source tree.
 
 import torch
 
-from ..initializers import he_orthogonal_init
+from .initializers import he_orthogonal_init
 
 from torch_scatter import scatter_add
 
@@ -124,12 +124,7 @@ class EfficientInteractionBilinear(torch.nn.Module):
         )
         he_orthogonal_init(self.weight)
 
-    def forward(
-        self,
-        basis,
-        m,
-        id_reduce
-    ):
+    def forward(self, basis, m, id_reduce):
         """
 
         Arguments

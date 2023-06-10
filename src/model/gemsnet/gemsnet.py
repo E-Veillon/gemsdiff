@@ -1,35 +1,16 @@
-"""
-Copyright (c) Facebook, Inc. and its affiliates.
-
-This source code is licensed under the MIT license found in the
-LICENSE file in the root directory of this source tree.
-"""
-
 from typing import Optional, Union
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch_scatter import scatter, scatter_add
-from torch_sparse import SparseTensor
-
-from .data_utils import get_pbc_distances, radius_graph_pbc
 
 from .layers.atom_update_block import OutputBlock
 from .layers.base_layers import Dense
 from .layers.efficient import EfficientInteractionDownProjection
 from .layers.embedding_block import AtomEmbedding, EdgeEmbedding
-from .layers.interaction_block import (
-    InteractionBlockTripletsOnly,
-)
+from .layers.interaction_block import InteractionBlockTripletsOnly
 from .layers.radial_basis import RadialBasis
 from .layers.spherical_basis import CircularBasisLayer
-from .utils import (
-    inner_product_normalized,
-    mask_neighbors,
-    ragged_range,
-    repeat_blocks,
-)
 from .layers.grad.vector_fields import make_vector_fields
 
 from src.utils.geometry import Geometry
@@ -37,65 +18,6 @@ from crystallographic_graph import sparse_meshgrid
 
 
 class GemsNetT(torch.nn.Module):
-    """
-    GemsNet
-
-    Parameters
-    ----------
-        num_targets: int
-            Number of prediction targets.
-
-        num_spherical: int
-            Controls maximum frequency.
-        num_radial: int
-            Controls maximum frequency.
-        num_blocks: int
-            Number of building blocks to be stacked.
-
-        emb_size_atom: int
-            Embedding size of the atoms.
-        emb_size_edge: int
-            Embedding size of the edges.
-        emb_size_trip: int
-            (Down-projected) Embedding size in the triplet message passing block.
-        emb_size_rbf: int
-            Embedding size of the radial basis transformation.
-        emb_size_cbf: int
-            Embedding size of the circular basis transformation (one angle).
-        emb_size_bil_trip: int
-            Embedding size of the edge embeddings in the triplet-based message passing block after the bilinear layer.
-
-        num_before_skip: int
-            Number of residual blocks before the first skip connection.
-        num_after_skip: int
-            Number of residual blocks after the first skip connection.
-        num_concat: int
-            Number of residual blocks after the concatenation.
-        num_atom: int
-            Number of residual blocks in the atom embedding blocks.
-
-        direct_forces: bool
-            If True predict forces based on aggregation of interatomic directions.
-            If False predict forces based on negative gradient of energy potential.
-
-        cutoff: float
-            Embedding cutoff for interactomic directions in Angstrom.
-        rbf: dict
-            Name and hyperparameters of the radial basis function.
-        envelope: dict
-            Name and hyperparameters of the envelope function.
-        cbf: dict
-            Name and hyperparameters of the cosine basis function.
-        aggregate: bool
-            Whether to aggregated node outputs
-        output_init: str
-            Initialization method for the final dense layer.
-        activation: str
-            Name of the activation function.
-        scale_file: str
-            Path to the json file containing the scaling factors.
-    """
-
     def __init__(
         self,
         latent_dim: int,
@@ -104,7 +26,7 @@ class GemsNetT(torch.nn.Module):
         num_blocks: int = 3,
         emb_size_atom: int = 128,
         emb_size_edge: int = 128,
-        emb_size_trip: int = 32,  # 64
+        emb_size_trip: int = 32,
         emb_size_rbf: int = 16,
         emb_size_cbf: int = 16,
         emb_size_bil_trip: int = 64,
@@ -138,7 +60,6 @@ class GemsNetT(torch.nn.Module):
         self.num_blocks = num_blocks
 
         self.cutoff = cutoff
-        # assert self.cutoff <= 6 or otf_graph
 
         ### ---------------------------------- Basis Functions ---------------------------------- ###
         self.radial_basis = RadialBasis(
@@ -301,7 +222,7 @@ class GemsNetT(torch.nn.Module):
         id3_ca = j_triplets[mask]
 
         # Calculate triplet angles
-        cosφ_cab = inner_product_normalized(V_st[id3_ca], V_st[id3_ba])
+        cosφ_cab = torch.sum(V_st[id3_ca] * V_st[id3_ba], dim=-1).clamp(min=-1, max=1)
         rad_cbf3, sbf3 = self.cbf_basis3(D_st, cosφ_cab, id3_ca)
 
         rbf = self.radial_basis(D_st)
@@ -379,78 +300,17 @@ class GemsNetT(torch.nn.Module):
             e_ij = geometry.edges_e_ij[id3_ba]
             e_ik = geometry.edges_e_ij[id3_ca]
 
-            """
-            print("cell", sum([hash(x) for x in cell.flatten().tolist()]))
-            print(
-                "batch_triplets",
-                sum([hash(x) for x in batch_triplets.flatten().tolist()]),
-            )
-            print("e_ij", sum([hash(x) for x in e_ij.flatten().tolist()]) % 0x100000000)
-            print("e_ik", sum([hash(x) for x in e_ik.flatten().tolist()]) % 0x100000000)
-            """
-            # torch.save(cell.cpu(), "cell.pt")
-            # torch.save(batch_triplets.cpu(), "batch_triplets.pt")
-            # torch.save(e_ij.cpu(), "e_ij.pt")
-            # torch.save(e_ik.cpu(), "e_ik.pt")
-
-            # print("S_st:", S_st.mean().item(), S_st.std().item())
-
             vector_fields = self.vector_fields(cell, batch_triplets, e_ij, e_ik)
-            """
-            print(
-                "vector_fields_0",
-                sum([hash(x) for x in vector_fields[:, 0].cpu().flatten().tolist()])
-                % 0x100000000,
-            )
-            print(
-                "vector_fields_1",
-                sum([hash(x) for x in vector_fields[:, 1].cpu().flatten().tolist()])
-                % 0x100000000,
-            )
-            print(
-                "vector_fields_2",
-                sum([hash(x) for x in vector_fields[:, 2].cpu().flatten().tolist()])
-                % 0x100000000,
-            )
-            """
-            # torch.save(vector_fields[:,0].cpu(), "vector_fields_0.pt")
-            # torch.save(vector_fields[:,1].cpu(), "vector_fields_1.pt")
-            # torch.save(vector_fields[:,2].cpu(), "vector_fields_2.pt")
-            # print(vector_fields.shape)
+
             filter_nan = ~(
                 (vector_fields != vector_fields)
                 .view(vector_fields.shape[0], -1)
                 .any(dim=1)
             )
-            """
-            print(filter_nan.shape)
-            print(
-                "filter_nan:",
-                filter_nan.float().mean().item(),
-                (~filter_nan).sum().item(),
-            )
-            print(torch.nonzero(~filter_nan).flatten())
-            print(torch.unique(batch_triplets[~filter_nan].flatten()))
-
-            print(
-                "vector_fields:",
-                vector_fields[filter_nan].mean().item(),
-                vector_fields[filter_nan].std().item(),
-            )
-            torch.save(vector_fields[filter_nan].cpu(), "vector_fields.pt")
-            # print(vector_fields[filter_nan])
-            print(
-                "S_st:", S_st[filter_nan].mean().item(), S_st[filter_nan].std().item()
-            )
-            print(S_st[filter_nan])
-            torch.save(S_st[filter_nan].cpu(), "S_st.pt")
-            """
-
             batch_triplets = batch_triplets[filter_nan]
             fields = (S_st[filter_nan, :, None, None] * vector_fields[filter_nan]).sum(
                 dim=1
             )
-            # print("fields:", fields.mean().item(), fields.std().item())
             I = torch.eye(3, 3, device=cell.device)[None]
             S_t = I + scatter(
                 fields,
@@ -459,8 +319,6 @@ class GemsNetT(torch.nn.Module):
                 dim_size=cell.shape[0],
                 reduce="mean",
             )  # 1st order approx of matrix exp
-            # cell_prime = torch.bmm(S_t, cell)
-            # print("S_t:", S_t.mean().item(), S_t.std().item())
 
             results.append(S_t)
 

@@ -1,5 +1,4 @@
-from .denoising import GemsNetDenoiser
-from .vae import GemsNetVAE
+from .gemsnet import GemsNetT
 from .diffusion import GemsNetDiffusion
 
-__all__ = ["GemsNetDenoiser", "GemsNetVAE", "GemsNetDiffusion"]
+__all__ = ["GemsNetDiffusion", "GemsNetT"]

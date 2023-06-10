@@ -9,9 +9,8 @@ import torch
 import torch.nn as nn
 from torch_scatter import scatter
 
-from ..initializers import he_orthogonal_init
+from .initializers import he_orthogonal_init
 from .base_layers import Dense, ResidualLayer
-from .scaling import ScalingFactor
 
 
 class AtomUpdateBlock(torch.nn.Module):
@@ -45,16 +44,9 @@ class AtomUpdateBlock(torch.nn.Module):
         super().__init__()
         self.name = name
 
-        self.dense_rbf = Dense(
-            emb_size_rbf, emb_size_edge, activation=None, bias=False
-        )
-        # self.scale_sum = ScalingFactor(
-        #    scale_file=scale_file, name=name + "_sum"
-        # )
+        self.dense_rbf = Dense(emb_size_rbf, emb_size_edge, activation=None, bias=False)
 
-        self.layers = self.get_mlp(
-            emb_size_edge, emb_size_atom, nHidden, activation
-        )
+        self.layers = self.get_mlp(emb_size_edge, emb_size_atom, nHidden, activation)
 
     def get_mlp(self, units_in, units, nHidden, activation):
         dense1 = Dense(units_in, units, activation=activation, bias=False)
@@ -148,9 +140,7 @@ class OutputBlock(AtomUpdateBlock):
         self.stress = stress
 
         self.seq_energy = self.layers  # inherited from parent class
-        self.out_energy = Dense(
-            emb_size_atom, num_targets, bias=False, activation=None
-        )
+        self.out_energy = Dense(emb_size_atom, num_targets, bias=False, activation=None)
 
         if self.direct_forces:
             self.seq_forces = self.get_mlp(
@@ -216,9 +206,7 @@ class OutputBlock(AtomUpdateBlock):
                 layers.extend(
                     [nn.Linear(hidden_dim, hidden_dim, bias=False), nn.SiLU()]
                 )
-            layers.append(
-                nn.Linear(hidden_dim, self.num_vector_fields, bias=False)
-            )
+            layers.append(nn.Linear(hidden_dim, self.num_vector_fields, bias=False))
 
             self.dense_S = nn.Sequential(*layers)
 
@@ -295,9 +283,7 @@ class OutputBlock(AtomUpdateBlock):
 
         # --------------------------------------- Stress Prediction -------------------------------------- #
         if self.stress:
-            x_emb = torch.cat(
-                (m[id3_i], m[id3_j], rbf[id3_i], rbf[id3_j], cbf), dim=1
-            )
+            x_emb = torch.cat((m[id3_i], m[id3_j], rbf[id3_i], rbf[id3_j], cbf), dim=1)
 
             x_S = self.dense_S(x_emb)
 

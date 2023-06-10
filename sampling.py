@@ -71,7 +71,6 @@ if __name__ == "__main__":
         vector_fields=hparams.vector_fields,
         diffusion_steps=hparams.diffusion_steps,
         x_betas=hparams.x_betas,
-        rho_betas=hparams.rho_betas,
     ).to(device)
 
     model.load_state_dict(
@@ -102,4 +101,3 @@ if __name__ == "__main__":
 
             with open(args.output, "w") as fp:
                 fp.write(cif)
-
