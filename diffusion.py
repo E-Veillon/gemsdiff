@@ -14,12 +14,15 @@ import random
 import datetime
 
 from src.utils.scaler import LatticeScaler
-from src.utils.data import MP20, Carbon24, Perov5
+from src.utils.data import MP20, Carbon24, Perov5, StructuresSampler
 from src.utils.hparams import Hparams
 from src.utils.metrics import compute_metrics
 from src.model.gemsnet import GemsNetDiffusion
 from src.utils.video import make_video
 from src.utils.cif import make_cif
+
+# torch.cuda.set_per_process_memory_fraction(0.33, 0)
+# torch.cuda.empty_cache()
 
 
 def get_dataloader(path: str, dataset: str, batch_size: int):
@@ -40,14 +43,12 @@ def get_dataloader(path: str, dataset: str, batch_size: int):
         test_set = Perov5(dataset_path, "test")
 
     loader_train = DataLoader(
-        train_set, batch_size=batch_size, shuffle=True, num_workers=4
+        train_set,
+        num_workers=4,
+        batch_sampler=StructuresSampler(train_set, max_atoms=batch_size, shuffle=True),
     )
-    loader_valid = DataLoader(
-        valid_set, batch_size=batch_size, shuffle=True, num_workers=4
-    )
-    loader_test = DataLoader(
-        test_set, batch_size=batch_size, shuffle=True, num_workers=4
-    )
+    loader_valid = DataLoader(valid_set, batch_size=64, num_workers=4)
+    loader_test = DataLoader(test_set, batch_size=64, num_workers=4)
 
     return loader_train, loader_valid, loader_test
 

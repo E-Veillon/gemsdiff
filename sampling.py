@@ -1,11 +1,6 @@
 import torch
 from torch_geometric.loader import DataLoader
 
-# from torch_geometric import seed_everything
-
-# seed_everything(0)
-# torch.use_deterministic_algorithms(mode=True)
-
 import tqdm
 
 import os
@@ -68,7 +63,6 @@ if __name__ == "__main__":
         features=hparams.features,
         knn=hparams.knn,
         num_blocks=hparams.layers,
-        vector_fields=hparams.vector_fields,
         diffusion_steps=hparams.diffusion_steps,
         x_betas=hparams.x_betas,
     ).to(device)

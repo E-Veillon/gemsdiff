@@ -6,7 +6,7 @@ import copy
 
 @dataclass
 class Hparams:
-    batch_size: int = 128
+    batch_size: int = 1024
     epochs: int = 128
 
     lr: float = 1e-3
