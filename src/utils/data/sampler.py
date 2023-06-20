@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import Sampler
+from torch.utils.data import Sampler, Subset
 
 from typing import Iterator, List
 
@@ -10,7 +10,9 @@ class StructuresSampler(Sampler[List[int]]):
     def __init__(
         self, dataset: StructuresList, max_atoms: int, shuffle: bool = False
     ) -> None:
-        assert isinstance(dataset, StructuresList)
+        assert isinstance(dataset, StructuresList) or (
+            isinstance(dataset, Subset) and isinstance(dataset.dataset, StructuresList)
+        )
         assert isinstance(max_atoms, int)
         assert isinstance(shuffle, bool)
 
@@ -21,7 +23,11 @@ class StructuresSampler(Sampler[List[int]]):
         self._make_batch()
 
     def _make_batch(self):
-        num_atoms = self.dataset.get_num_atoms()
+        if isinstance(self.dataset, Subset):
+            idx = torch.tensor(self.dataset.indices, dtype=torch.long)
+            num_atoms = self.dataset.dataset.get_num_atoms(idx=idx)
+        else:
+            num_atoms = self.dataset.get_num_atoms()
 
         if self.shuffle:
             idx = torch.randperm(num_atoms.shape[0])

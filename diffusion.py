@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch_geometric.loader import DataLoader
+from torch.utils.data import random_split
 from torch_ema import ExponentialMovingAverage
 import pandas as pd
 import tqdm
@@ -14,33 +15,31 @@ import random
 import datetime
 
 from src.utils.scaler import LatticeScaler
-from src.utils.data import MP20, Carbon24, Perov5, StructuresSampler
+from src.utils.data import MP20, OQMD, StructuresSampler
 from src.utils.hparams import Hparams
 from src.utils.metrics import compute_metrics
 from src.model.gemsnet import GemsNetDiffusion
 from src.utils.video import make_video
 from src.utils.cif import make_cif
 
-# torch.cuda.set_per_process_memory_fraction(0.33, 0)
-# torch.cuda.empty_cache()
+torch.cuda.set_per_process_memory_fraction(0.33, 0)
+torch.cuda.empty_cache()
 
 
 def get_dataloader(path: str, dataset: str, batch_size: int):
-    assert dataset in ["mp-20", "carbon-24", "perov-5"]
+    assert dataset in ["mp-20", "oqmd"]
 
     dataset_path = os.path.join(path, dataset)
     if dataset == "mp-20":
         train_set = MP20(dataset_path, "train")
         valid_set = MP20(dataset_path, "val")
         test_set = MP20(dataset_path, "test")
-    elif dataset == "carbon-24":
-        train_set = Carbon24(dataset_path, "train")
-        valid_set = Carbon24(dataset_path, "val")
-        test_set = Carbon24(dataset_path, "test")
-    elif dataset == "perov-5":
-        train_set = Perov5(dataset_path, "train")
-        valid_set = Perov5(dataset_path, "val")
-        test_set = Perov5(dataset_path, "test")
+    elif dataset == "oqmd":
+        data = OQMD(dataset_path)
+        gen = torch.Generator().manual_seed(42)
+        train_set, valid_set, test_set = random_split(
+            data, [0.9, 0.05, 0.05], generator=gen
+        )
 
     loader_train = DataLoader(
         train_set,
@@ -79,7 +78,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="train denoising model")
     parser.add_argument("--hparams", "-H", default=None, help="json file")
     parser.add_argument("--logs", "-l", default="./runs/diffusion")
-    parser.add_argument("--dataset", "-D", default="mp-20")
+    parser.add_argument("--dataset", "-D", default="oqmd")
     parser.add_argument("--dataset-path", "-dp", default="./data")
     parser.add_argument("--device", "-d", default="cuda")
     parser.add_argument("--threads", "-t", type=int, default=8)
