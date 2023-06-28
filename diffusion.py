@@ -22,9 +22,6 @@ from src.model.gemsnet import GemsNetDiffusion
 from src.utils.video import make_video
 from src.utils.cif import make_cif
 
-torch.cuda.set_per_process_memory_fraction(0.33, 0)
-torch.cuda.empty_cache()
-
 
 def get_dataloader(path: str, dataset: str, batch_size: int):
     assert dataset in ["mp-20", "oqmd"]
