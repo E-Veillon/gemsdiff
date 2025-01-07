@@ -109,9 +109,12 @@ class OutputBlock(AtomUpdateBlock):
         self,
         emb_size_atom: int,
         emb_size_edge: int,
+        emb_size_trip: int,
         emb_size_rbf: int,
+        emb_size_cbf: int,
         nHidden: int,
         num_targets: int,
+        num_vector_fields: int,
         activation=None,
         direct_forces=True,
         stress=True,
@@ -143,10 +146,81 @@ class OutputBlock(AtomUpdateBlock):
             self.seq_forces = self.get_mlp(
                 emb_size_edge, emb_size_edge, nHidden, activation
             )
-            self.out_forces = Dense(emb_size_edge, 1, bias=False, activation=None)
+            self.out_forces = Dense(
+                emb_size_edge, num_targets, bias=False, activation=None
+            )
             self.dense_rbf_F = Dense(
                 emb_size_rbf, emb_size_edge, activation=None, bias=False
             )
+
+        if self.stress:
+            """
+            self.seq_stress = self.get_mlp(
+                emb_size_edge * 2, emb_size_trip, nHidden, activation
+            )
+            """
+            self.emb_size_trip = emb_size_trip
+            self.num_vector_fields = num_vector_fields
+            """
+            self.seq_stress = self.get_mlp(
+                emb_size_edge,
+                num_vector_fields * emb_size_trip,
+                nHidden,
+                activation,
+            )
+            """
+
+            """
+            self.seq_stress = self.get_mlp(
+                emb_size_edge,
+                emb_size_trip,
+                nHidden,
+                activation,
+            )
+            self.bilinear = nn.Parameter(
+                torch.empty(
+                    emb_size_trip,
+                    emb_size_trip,
+                    self.num_vector_fields,
+                )
+            )
+            self.bilinear_geom = nn.Parameter(
+                torch.empty(
+                    self.num_vector_fields,
+                    2 * emb_size_rbf + emb_size_cbf,
+                    self.num_vector_fields,
+                )
+            )
+            """
+            n_layers = 1
+            hidden_dim = 64
+            layers = [
+                nn.Linear(
+                    2 * emb_size_edge + 2 * emb_size_rbf + emb_size_cbf,
+                    hidden_dim,
+                    bias=False,
+                ),
+                nn.SiLU(),
+            ]
+            for _ in range(n_layers):
+                layers.extend(
+                    [nn.Linear(hidden_dim, hidden_dim, bias=False), nn.SiLU()]
+                )
+            layers.append(nn.Linear(hidden_dim, self.num_vector_fields, bias=False))
+
+            self.dense_S = nn.Sequential(*layers)
+
+            """
+            self.out_stress = Dense(
+                emb_size_trip, num_vector_fields, bias=False, activation=None
+            )
+            self.dense_rbf_S = Dense(
+                emb_size_rbf, emb_size_trip, activation=None, bias=False
+            )
+            self.dense_cbf_S = Dense(
+                emb_size_cbf, emb_size_trip, activation=None, bias=False
+            )
+            """
 
         self.reset_parameters()
 
@@ -155,6 +229,11 @@ class OutputBlock(AtomUpdateBlock):
             self.out_energy.reset_parameters(he_orthogonal_init)
             if self.direct_forces:
                 self.out_forces.reset_parameters(he_orthogonal_init)
+            """
+            if self.stress:
+                he_orthogonal_init(self.bilinear.data)
+                he_orthogonal_init(self.bilinear_geom.data)
+            """
         elif self.output_init == "zeros":
             self.out_energy.reset_parameters(torch.nn.init.zeros_)
             if self.direct_forces:
@@ -179,6 +258,8 @@ class OutputBlock(AtomUpdateBlock):
         x = m * rbf_emb_E
 
         x_E = scatter(x, id_j, dim=0, dim_size=nAtoms, reduce="sum")
+        # (nAtoms, emb_size_edge)
+        # x_E = self.scale_sum(m, x_E)
 
         for layer in self.seq_energy:
             x_E = layer(x_E)  # (nAtoms, emb_size_atom)
@@ -193,12 +274,21 @@ class OutputBlock(AtomUpdateBlock):
 
             rbf_emb_F = self.dense_rbf_F(rbf)  # (nEdges, emb_size_edge)
             x_F_rbf = x_F * rbf_emb_F
+            # x_F = self.scale_rbf_F(x_F, x_F_rbf)
             x_F = x_F_rbf
 
             x_F = self.out_forces(x_F)  # (nEdges, num_targets)
         else:
             x_F = 0
 
+        # --------------------------------------- Stress Prediction -------------------------------------- #
+        if self.stress:
+            x_emb = torch.cat((m[id3_i], m[id3_j], rbf[id3_i], rbf[id3_j], cbf), dim=1)
+
+            x_S = self.dense_S(x_emb)
+
+        else:
+            x_S = 0
         # ----------------------------------------------------------------------------------------------- #
 
-        return x_E, x_F
+        return x_E, x_F, x_S

@@ -14,16 +14,12 @@ def make_cif(
 ) -> List[str]:
     n_struct = num_atoms.shape[0]
 
-    batch = torch.arange(num_atoms.shape[0], device=num_atoms.device).repeat_interleave(
+    batch = torch.arange(num_atoms.shape[0], device=rho.device).repeat_interleave(
         num_atoms
     )
 
     crystals = [
-        crystal(
-            z[batch == i].cpu(),
-            x[batch == i].cpu(),
-            cellpar=rho[0][i].cpu().tolist() + rho[1][i].cpu().tolist(),
-        )
+        crystal(z[batch == i].cpu(), x[batch == i].cpu(), cell=rho[i].cpu())
         for i in range(n_struct)
     ]
 

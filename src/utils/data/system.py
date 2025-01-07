@@ -97,4 +97,3 @@ class SystemDataset(InMemoryDataset):
         z = self.system.repeat(idx.shape[0]).repeat_interleave(comp.flatten())
 
         return Data(z=z, num_atoms=num_atoms)
-

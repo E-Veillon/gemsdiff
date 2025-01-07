@@ -11,26 +11,6 @@ from src.utils.hparams import Hparams
 from src.model.gemsnet import GemsNetDiffusion
 from src.utils.cif import make_cif
 
-
-def get_dataloader(path: str, dataset: str, batch_size: int):
-    assert dataset in ["mp-20", "oqmd"]
-
-    dataset_path = os.path.join(path, dataset)
-    if dataset == "mp-20":
-        test_set = MP20(dataset_path, "test")
-    elif dataset == "oqmd":
-        data = OQMD(dataset_path)
-        gen = torch.Generator().manual_seed(42)
-        a=int(0.9*len(data))
-        b=int(0.05*len(data))
-        c=len(data)-a-b
-        _, _, test_set = random_split(data, [a,b,c], generator=gen)
-
-    loader_test = DataLoader(test_set, batch_size=batch_size, num_workers=4)
-
-    return loader_test
-
-
 if __name__ == "__main__":
     import argparse
 
@@ -55,7 +35,7 @@ if __name__ == "__main__":
     hparams.from_json(os.path.join(args.checkpoint, "hparams.json"))
 
     dataset = SystemDataset(args.system.split("-"))
-    loader = DataLoader(dataset, batch_size=128,num_workers=0)
+    loader = DataLoader(dataset, batch_size=128, num_workers=0)
 
     scaler = LatticeScaler().to(device)
 
@@ -69,7 +49,10 @@ if __name__ == "__main__":
     ).to(device)
 
     model.load_state_dict(
-        torch.load(os.path.join(args.checkpoint, "best.pt")), strict=False
+        torch.load(
+            os.path.join(args.checkpoint, "best.pt"), map_location=torch.device(device)
+        ),
+        strict=False,
     )
     model.eval()
 
@@ -92,5 +75,5 @@ if __name__ == "__main__":
             torch.cat(num_atoms, dim=0),
         )
         cif = make_cif(cat_rho, cat_x, cat_z, cat_num_atoms)
-        with open(args.output,"w") as fp:
+        with open(args.output, "w") as fp:
             fp.write(cif)

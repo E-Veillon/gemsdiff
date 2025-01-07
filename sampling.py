@@ -12,6 +12,7 @@ from src.utils.hparams import Hparams
 from src.model.gemsnet import GemsNetDiffusion
 from src.utils.cif import make_cif
 
+
 def get_dataloader(path: str, dataset: str, batch_size: int):
     assert dataset in ["mp", "oqmd"]
 
@@ -26,7 +27,7 @@ def get_dataloader(path: str, dataset: str, batch_size: int):
         data = OQMD(dataset_path)
         gen = torch.Generator().manual_seed(42)
         train_set, valid_set, test_set = random_split(
-                data, [199686, 11094, 11094], generator=gen
+            data, [199686, 11094, 11094], generator=gen
         )
 
     loader_test = DataLoader(test_set, batch_size=64, num_workers=4)

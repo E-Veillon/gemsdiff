@@ -42,6 +42,7 @@ class GemsNetT(torch.nn.Module):
         energy_targets: int = 1,
         compute_energy: bool = True,
         compute_forces: bool = True,
+        compute_stress: bool = True,
         output_init: str = "HeOrthogonal",
         activation: str = "swish",
         scale_file: Optional[str] = None,
@@ -156,15 +157,23 @@ class GemsNetT(torch.nn.Module):
         self.int_blocks = torch.nn.ModuleList(int_blocks)
 
         if self.output_block:
+            num_vector_fields = (
+                0
+                if not hasattr(self, "vector_fields")
+                else self.vector_fields.triplets_dim
+            )
             out_blocks = []
             for i in range(num_blocks + 1):
                 out_blocks.append(
                     OutputBlock(
                         emb_size_atom=emb_size_atom,
                         emb_size_edge=emb_size_edge,
+                        emb_size_trip=emb_size_trip,
                         emb_size_rbf=emb_size_rbf,
+                        emb_size_cbf=emb_size_cbf,
                         nHidden=num_atom,
                         num_targets=energy_targets,
+                        num_vector_fields=num_vector_fields,
                         activation=activation,
                         output_init=output_init,
                         direct_forces=True,
@@ -188,6 +197,7 @@ class GemsNetT(torch.nn.Module):
         geometry: Geometry,
         emb: torch.FloatTensor = None,
     ):
+        cell = geometry.cell
         x = geometry.x
         num_atoms = geometry.num_atoms
         batch = geometry.batch
@@ -229,7 +239,7 @@ class GemsNetT(torch.nn.Module):
         cbf_out = self.mlp_cbf_out(sbf3)
 
         if self.output_block:
-            E_t, F_st = self.out_blocks[0](
+            E_t, F_st, S_st = self.out_blocks[0](
                 h, m, rbf_out, cbf_out, idx_t, id3_ba, id3_ca
             )
 
@@ -248,11 +258,12 @@ class GemsNetT(torch.nn.Module):
             )
 
             if self.output_block:
-                E, F = self.out_blocks[i + 1](
+                E, F, S = self.out_blocks[i + 1](
                     h, m, rbf_out, cbf_out, idx_t, id3_ba, id3_ca
                 )
                 E_t += E
                 F_st += F
+                S_st += S
 
         results = [h]
 

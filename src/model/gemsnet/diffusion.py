@@ -175,14 +175,11 @@ class GemsNetDiffusion(nn.Module):
             x = self.sample(pred_x, t)
 
             if return_history:
-                lengths, angles = self.lattice_scaler.denormalise(*pred_rho)
-                rho_history_lengths.append(lengths)
-                rho_history_angles.append(angles)
+                rho_history.append(rho)
                 x_history.append(x)
 
         if return_history:
-            rho_lengths = torch.stack(rho_history_lengths, dim=0)
-            rho_angles = torch.stack(rho_history_angles, dim=0)
+            rho = torch.stack(rho_history, dim=0)
             x = torch.stack(x_history, dim=0)
 
-        return (rho_lengths, rho_angles), x
+        return rho, x
