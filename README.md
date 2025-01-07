@@ -2,6 +2,8 @@
 
 Official implementation of GemsDiff. However, we realised after publication that our proposed model is more efficient so we provided the newest version without lattice diffusion. This repo contains dataset and checkpoints to retrain and generate materials.
 
+All scripts can run on CPU and CUDA GPU but cuda is unsed by default. Please follow documentation to install pytorch and torch-geometric on CPU only.
+
 ## Installation on a virtual environement
 
 Create and activate the environement
@@ -36,7 +38,7 @@ pip3 install torch-ema pandas tqdm matplotlib h5py pymatgen ase tensorboard
 Sampling LiFeO2 from a checkpoint (OQMD)
 
 ```bash
-python sampling.py LiFeO2 -c runs/without_cell_diffusion/training_2024_02_23_16_13_55_oqmd_604 -o LiFeO2.cif
+python3 sampling.py LiFeO2 -c runs/without_cell_diffusion/training_2024_02_23_16_13_55_oqmd_604 -o LiFeO2.cif
 ```
 
 ## Sampling structures of a given system from checkpoint
