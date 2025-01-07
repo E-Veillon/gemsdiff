@@ -30,32 +30,13 @@ class Grad(nn.Module):
         return y.clone(), x.clone()
 
     def jacobian_norm(self, x):
-        """
-        print(
-            "x",
-            sum([hash(x_) for x_ in x.flatten().tolist()]) % 0x100000000,
-        )
-        print(
-            "x.norm",
-            sum([hash(x_) for x_ in x.norm(dim=1).flatten().tolist()]) % 0x100000000,
-        )
-        print(x.shape)
-        """
         return F.normalize(x, dim=1)
-        return x / x.norm(dim=1)[:, None]
 
     def jacobian_cross_norm(self, x, y):
         diff_cross_x = (self.K[None] * y[:, None, None, :]).sum(dim=3)
         diff_cross_y = -(self.K[None] * x[:, None, None, :]).sum(dim=3)
 
-        # print("jacobian_cross_norm")
         diff_norm = self.jacobian_norm(torch.cross(x, y))
-        """
-        print(
-            "diff_norm",
-            sum([hash(x) for x in diff_norm.flatten().tolist()]) % 0x100000000,
-        )
-        """
         diff_x = torch.bmm(diff_norm.unsqueeze(1), diff_cross_x).squeeze(1)
         diff_y = torch.bmm(diff_norm.unsqueeze(1), diff_cross_y).squeeze(1)
 
@@ -76,16 +57,6 @@ class Grad(nn.Module):
         )
 
         diff_cross_norm_u, diff_cross_norm_v = self.jacobian_cross_norm(u, v)
-        """
-        print(
-            "diff_cross_norm_u",
-            sum([hash(x) for x in diff_cross_norm_u.flatten().tolist()]) % 0x100000000,
-        )
-        print(
-            "diff_cross_norm_v",
-            sum([hash(x) for x in diff_cross_norm_v.flatten().tolist()]) % 0x100000000,
-        )
-        """
         diff_dot_u, diff_dot_v = self.jacobian_dot(u, v)
 
         diff_u = (
@@ -113,91 +84,7 @@ class Grad(nn.Module):
 
         diff_g = torch.einsum("bi,bijk->bjk", diff_u, diff_g_u)
 
-        diff_x = torch.bmm(diff_u.unsqueeze(1), rho_prime).squeeze(1)
-
-        diff_x_i = -diff_x
-        diff_x_j = diff_x
-
-        return diff_g, diff_x_i, diff_x_j
-
-    def grad_distance_sym(self, rho, x_ij, g=None):
-        if g is None:
-            rho_prime = rho
-        else:
-            rho_prime = torch.bmm((g + torch.transpose(g, 1, 2)), rho)
-
-        u = torch.bmm(rho_prime, x_ij.unsqueeze(2)).squeeze(2)
-
-        diff_u = self.jacobian_norm(u)
-
-        diff_g_u = self.jacobian_m(torch.bmm(rho, x_ij.unsqueeze(2)).squeeze(2))
-
-        diff_g_demi = torch.einsum("bi,bijk->bjk", diff_u, diff_g_u)
-
-        diff_g = diff_g_demi + torch.transpose(diff_g_demi, 1, 2)
-
-        diff_x = torch.bmm(diff_u.unsqueeze(1), rho_prime).squeeze(1)
-
-        diff_x_i = -diff_x
-        diff_x_j = diff_x
-
-        return diff_g, diff_x_i, diff_x_j
-
-    def grad_area(self, rho, x_ij, x_ik, g=None):
-        if g is None:
-            rho_prime = rho
-        else:
-            rho_prime = torch.bmm(g, rho)
-
-        u = torch.bmm(rho_prime, x_ij.unsqueeze(2)).squeeze(2)
-        v = torch.bmm(rho_prime, x_ik.unsqueeze(2)).squeeze(2)
-
-        diff_u, diff_v = self.jacobian_cross_norm(u, v)
-        diff_g_u = self.jacobian_m(torch.bmm(rho, x_ij.unsqueeze(2)).squeeze(2))
-        diff_g_v = self.jacobian_m(torch.bmm(rho, x_ik.unsqueeze(2)).squeeze(2))
-
-        diff_g = 0.5 * (
-            torch.einsum("bi,bijk->bjk", diff_u, diff_g_u)
-            + torch.einsum("bi,bijk->bjk", diff_v, diff_g_v)
-        )
-        diff_vect = rho_prime
-
-        diff_x_i = -0.5 * (
-            torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-            + torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
-        )
-        diff_x_j = 0.5 * torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-        diff_x_k = 0.5 * torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
-
-        return diff_g, diff_x_i, diff_x_j, diff_x_k
-
-    def grad_area_sym(self, rho, x_ij, x_ik, g=None):
-        if g is None:
-            rho_prime = rho
-        else:
-            rho_prime = torch.bmm((g + torch.transpose(g, 1, 2)), rho)
-
-        u = torch.bmm(rho_prime, x_ij.unsqueeze(2)).squeeze(2)
-        v = torch.bmm(rho_prime, x_ik.unsqueeze(2)).squeeze(2)
-        diff_u, diff_v = self.jacobian_cross_norm(u, v)
-        diff_g_u = self.jacobian_m(torch.bmm(rho, x_ij.unsqueeze(2)).squeeze(2))
-        diff_g_v = self.jacobian_m(torch.bmm(rho, x_ik.unsqueeze(2)).squeeze(2))
-
-        diff_g_demi = torch.einsum("bi,bijk->bjk", diff_u, diff_g_u) + torch.einsum(
-            "bi,bijk->bjk", diff_v, diff_g_v
-        )
-        diff_g = 0.5 * (diff_g_demi + torch.transpose(diff_g_demi, 1, 2))
-
-        diff_vect = rho_prime
-
-        diff_x_i = -0.5 * (
-            torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-            + torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
-        )
-        diff_x_j = 0.5 * torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-        diff_x_k = 0.5 * torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
-
-        return diff_g, diff_x_i, diff_x_j, diff_x_k
+        return diff_g
 
     def grad_angle(self, rho, x_ij, x_ik, g=None):
         if g is None:
@@ -208,11 +95,7 @@ class Grad(nn.Module):
         u = torch.bmm(rho_prime, x_ij.unsqueeze(2)).squeeze(2)
         v = torch.bmm(rho_prime, x_ik.unsqueeze(2)).squeeze(2)
 
-        # print("u", sum([hash(x) for x in u.flatten().tolist()]) % 0x100000000)
-        # print("v", sum([hash(x) for x in v.flatten().tolist()]) % 0x100000000)
         diff_u, diff_v = self.jacobian_angle_vector(u, v)
-        # print("diff_u", sum([hash(x) for x in diff_u.flatten().tolist()]) % 0x100000000)
-        # print("diff_v", sum([hash(x) for x in diff_v.flatten().tolist()]) % 0x100000000)
 
         diff_g_u = self.jacobian_m(torch.bmm(rho, x_ij.unsqueeze(2)).squeeze(2))
         diff_g_v = self.jacobian_m(torch.bmm(rho, x_ik.unsqueeze(2)).squeeze(2))
@@ -220,43 +103,25 @@ class Grad(nn.Module):
         diff_g = torch.einsum("bi,bijk->bjk", diff_u, diff_g_u) + torch.einsum(
             "bi,bijk->bjk", diff_v, diff_g_v
         )
-        diff_vect = rho_prime
 
-        diff_x_i = -(
-            torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-            + torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
+        return diff_g
+
+    @property
+    def triplets_dim(self):
+        return 3
+
+    def forward(
+        self,
+        cell: torch.FloatTensor,
+        batch_triplets: torch.LongTensor,
+        e_ij: torch.FloatTensor,
+        e_ik: torch.FloatTensor,
+    ):
+        return torch.stack(
+            (
+                self.grad_distance(cell[batch_triplets], e_ij),
+                self.grad_distance(cell[batch_triplets], e_ik),
+                self.grad_angle(cell[batch_triplets], e_ij, e_ik),
+            ),
+            dim=1,
         )
-        diff_x_j = torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-        diff_x_k = torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
-
-        # print("diff_g", sum([hash(x) for x in diff_g.flatten().tolist()]) % 0x100000000)
-
-        return diff_g, diff_x_i, diff_x_j, diff_x_k
-
-    def grad_angle_sym(self, rho, x_ij, x_ik, g=None):
-        if g is None:
-            rho_prime = rho
-        else:
-            rho_prime = torch.bmm((g + torch.transpose(g, 1, 2)), rho)
-
-        u = torch.bmm(rho_prime, x_ij.unsqueeze(2)).squeeze(2)
-        v = torch.bmm(rho_prime, x_ik.unsqueeze(2)).squeeze(2)
-        diff_u, diff_v = self.jacobian_angle_vector(u, v)
-        diff_g_u = self.jacobian_m(torch.bmm(rho, x_ij.unsqueeze(2)).squeeze(2))
-        diff_g_v = self.jacobian_m(torch.bmm(rho, x_ik.unsqueeze(2)).squeeze(2))
-
-        diff_g_demi = torch.einsum("bi,bijk->bjk", diff_u, diff_g_u) + torch.einsum(
-            "bi,bijk->bjk", diff_v, diff_g_v
-        )
-        diff_g = diff_g_demi + torch.transpose(diff_g_demi, 1, 2)
-
-        diff_vect = rho_prime
-
-        diff_x_i = -(
-            torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-            + torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
-        )
-        diff_x_j = torch.bmm(diff_u.unsqueeze(1), diff_vect).squeeze(1)
-        diff_x_k = torch.bmm(diff_v.unsqueeze(1), diff_vect).squeeze(1)
-
-        return diff_g, diff_x_i, diff_x_j, diff_x_k

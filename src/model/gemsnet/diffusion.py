@@ -1,25 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_scatter import scatter_mean, scatter_add
+from torch_scatter import scatter_mean
 import tqdm
 
 from typing import Tuple, Union
-import math
-import warnings
 
 from src.utils.scaler import LatticeScaler
+from src.utils.geometry import Geometry
 from src.loss import OptimalTrajLoss, LatticeParametersLoss
 from .gemsnet import GemsNetT
-
-from ase.data import atomic_masses
-
-from src.utils.geometry import Geometry
-
-
-def logm(X: torch.FloatTensor) -> torch.FloatTensor:
-    w, V = torch.linalg.eig(X)
-    return torch.einsum("bij,bj,bjk->bik", V, w.log(), torch.linalg.inv(V)).real
 
 
 class GemsNetDiffusion(nn.Module):
@@ -31,30 +21,26 @@ class GemsNetDiffusion(nn.Module):
         num_blocks: int = 3,
         x_betas: Tuple[float, float] = (1e-6, 2e-4),
         diffusion_steps: int = 100,
-        limit_density: Tuple[float, float] = (0.1, 100.0),
     ):
         super().__init__()
 
-        self.knn = knn
-
-        self.lattice_scaler = lattice_scaler
-
         # energy_targets
+        self.knn = knn
         self.gnn = GemsNetT(
             features,
             num_blocks=num_blocks,
-            z_input="embedding",
-            energy_targets=6,
-            compute_energy=True,
+            energy_targets=1,
+            compute_energy=False,
             compute_forces=True,
+            compute_stress=True,
         )
 
         self.loss_lattice_fn = LatticeParametersLoss(lattice_scaler=lattice_scaler)
         self.loss_pos_fn = OptimalTrajLoss(center=True, euclidian=True, distance="l1")
 
-        (self.density_min, self.density_max) = limit_density
         self.x_betas = nn.Parameter(
-            torch.linspace(x_betas[0], x_betas[1], diffusion_steps), requires_grad=False
+            torch.linspace(x_betas[0], x_betas[1], diffusion_steps),
+            requires_grad=False,
         )
         self.x_sigma = nn.Parameter(self.x_betas.sqrt(), requires_grad=False)
         self.x_alphas = nn.Parameter(1 - self.x_betas, requires_grad=False)
@@ -62,16 +48,15 @@ class GemsNetDiffusion(nn.Module):
             torch.cumprod(self.x_alphas, dim=0), requires_grad=False
         )
 
-        self.atomic_masses = nn.Parameter(
-            torch.from_numpy(atomic_masses).float(), requires_grad=False
-        )
-
     @property
     def diffusion_steps(self) -> int:
         return self.x_betas.shape[0]
 
     def get_x_t(
-        self, x: torch.FloatTensor, t: torch.LongTensor, num_atoms: torch.LongTensor
+        self,
+        x: torch.FloatTensor,
+        t: torch.LongTensor,
+        num_atoms: torch.LongTensor,
     ) -> torch.FloatTensor:
         batch = torch.arange(
             num_atoms.shape[0], dtype=torch.long, device=x.device
@@ -106,13 +91,9 @@ class GemsNetDiffusion(nn.Module):
             compute_reverse_idx=True,
         )
 
-        _, lattice_param, x_prime, x_traj = self.gnn(z, geometry)
+        _, x_prime, x_traj, rho_prime = self.gnn(z, geometry)
 
-        return x_prime, x_traj, (lattice_param[:, :3], lattice_param[:, 3:])
-
-    @property
-    def num_params(self):
-        return sum(p.numel() for p in self.parameters())
+        return x_prime, x_traj, rho_prime
 
     def get_loss(
         self,
@@ -162,7 +143,7 @@ class GemsNetDiffusion(nn.Module):
         self,
         x_t: torch.FloatTensor,
         t: int,
-    ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
+    ) -> torch.FloatTensor:
         if t == 0:
             return x_t
 
@@ -181,15 +162,7 @@ class GemsNetDiffusion(nn.Module):
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
         x = torch.rand((z.shape[0], 3), device=z.device)
 
-        rho_history_lengths, rho_history_angles, x_history = [], [], []
-        if return_history:
-            rho_history_lengths.append(
-                torch.ones((num_atoms.shape[0], 3), device=z.device)
-            )
-            rho_history_angles.append(
-                torch.full_like(rho_history_lengths[0], fill_value=90)
-            )
-            x_history.append(x)
+        rho_history, x_history = [], []
 
         t_list = list(range(self.diffusion_steps - 1, -1, -1))
         if verbose:
@@ -198,8 +171,7 @@ class GemsNetDiffusion(nn.Module):
             iterator = t_list
 
         for t in iterator:
-            pred_x, _, pred_rho = self.forward(x, z, num_atoms)
-
+            pred_x, _, rho = self.forward(x, z, num_atoms)
             x = self.sample(pred_x, t)
 
             if return_history:

@@ -7,39 +7,26 @@ import copy
 @dataclass
 class Hparams:
     batch_size: int = 1024
-    epochs: int = 1  # 128
+    epochs: int = 128
 
     lr: float = 1e-3
     beta1: float = 0.9
     grad_clipping: float = 1.0
 
     knn: int = 32
+    features: int = 256
+
+    layers: int = 3
 
     diffusion_steps: int = 100
     x_betas: Tuple[float, float] = (1e-6, 2e-3)
-
-    @property
-    def vector_fields(self):
-        def split(s, delimiter):
-            if len(s) > 0:
-                return s.split(delimiter)
-            return []
-
-        return {
-            "type": self.vector_fields_type,
-            "normalize": self.vector_fields_normalize,
-            "edges": split(self.vector_fields_edges, "|"),
-            "triplets": split(self.vector_fields_triplets, "|"),
-        }
 
     def from_json(self, file_name):
         with open(file_name, "r") as fp:
             hparams = json.load(fp)
 
         for key, value in hparams.items():
-            assert (key in self.__dict__) or (
-                key in ("x_betas_min", "x_betas_max", "rho_betas_min", "rho_betas_max")
-            )
+            assert (key in self.__dict__) or (key in ("x_betas_min", "x_betas_max"))
 
             if key == "x_betas_min":
                 self.__dict__["x_betas"] = (value, self.__dict__["x_betas"][1])

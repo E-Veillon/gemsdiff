@@ -1,14 +1,13 @@
-from typing import Iterator
+from typing import Iterator, Sequence
 from torch_geometric.data import InMemoryDataset, Data
 from torch_geometric.loader import DataLoader
 
 import h5py
 import torch
-import pandas as pd
 import numpy as np
 from pymatgen.core.structure import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
-from ase.neighborlist import neighbor_list
+from ase.io import iread
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 
@@ -23,39 +22,21 @@ from .dataset import StructuresList
 
 
 def process_cif(args):
-    (cif, warning_queue) = args
-
-    with warnings.catch_warnings(record=True) as ws:
-        # Cause all warnings to always be triggered.
-        warnings.simplefilter("always")
-
-        struct = Structure.from_str(cif, fmt="cif")
-
-        if warning_queue is not None:
-            for w in ws:
-                warning_queue.put((hash(str(w.message)), w))
-
-    lengths = np.array(struct.lattice.abc, dtype=np.float32)
-    angles = np.array(struct.lattice.angles, dtype=np.float32)
-
-    atoms = AseAtomsAdaptor.get_atoms(struct)
-
-    atoms.set_scaled_positions(atoms.get_scaled_positions(wrap=True))
-
-    assert (0 <= atoms.get_scaled_positions()).all() and (
-        atoms.get_scaled_positions() < 1
-    ).all()
+    atoms = args
 
     cell = atoms.cell.array.astype(np.float32)
-    z = np.array(struct.atomic_numbers, dtype=np.int64)
-    pos = struct.frac_coords.astype(np.float32)
+    z = np.array(atoms.get_atomic_numbers(), dtype=np.int64)
+    pos = atoms.get_scaled_positions().astype(np.float32)
+    [a, b, c, alpha, beta, gamma] = atoms.cell.cellpar()
+    lengths = np.array([a, b, c], dtype=np.float32)
+    angles = np.array([alpha, beta, gamma], dtype=np.float32)
 
     data = {"cell": cell, "lengths": lengths, "angles": angles, "z": z, "pos": pos}
 
     return data
 
 
-class CSVDataset(InMemoryDataset, StructuresList, metaclass=ABCMeta):
+class CIFDataset(InMemoryDataset, StructuresList, metaclass=ABCMeta):
     def __init__(
         self,
         root: str,
@@ -148,21 +129,13 @@ class CSVDataset(InMemoryDataset, StructuresList, metaclass=ABCMeta):
                 mask
             ]
 
-    def process_csv(
+    def process_cif(
         self,
-        csv_file: str,
+        cif_file: str,
         hdf5_file: str,
         loading_description: str = "loading dataset",
     ) -> None:
-        df = pd.read_csv(csv_file)
-
-        if self.warn:
-            m = mp.Manager()
-            warning_queue = m.Queue()
-        else:
-            warning_queue = None
-
-        iterator = [(row["cif"], warning_queue) for _, row in df.iterrows()]
+        iterator = iread(cif_file)
 
         if self.multithread:
             if self.verbose:
@@ -179,22 +152,10 @@ class CSVDataset(InMemoryDataset, StructuresList, metaclass=ABCMeta):
             results = []
 
             if self.verbose:
-                iterator = tqdm(iterator, desc=loading_description, total=len(df))
+                iterator = tqdm(iterator, desc=loading_description)
 
             for args in iterator:
                 results.append(process_cif(args))
-
-        if self.warn:
-            warnings_type = {}
-            while not warning_queue.empty():
-                key, warning = warning_queue.get()
-                if key not in warnings_type:
-                    warnings_type[key] = warning
-
-            for w in warnings_type.values():
-                warnings.warn_explicit(
-                    w.message, category=w.category, filename=w.filename, lineno=w.lineno
-                )
 
         material_id = np.arange(len(results), dtype=np.int32)
 
@@ -231,9 +192,9 @@ class CSVDataset(InMemoryDataset, StructuresList, metaclass=ABCMeta):
             :
         ] = material_id
         f.create_dataset("batch", batch.shape, dtype=batch.dtype)[:] = batch
-        f.create_dataset("num_atoms", num_atoms.shape, dtype=num_atoms.dtype)[:] = (
-            num_atoms
-        )
+        f.create_dataset("num_atoms", num_atoms.shape, dtype=num_atoms.dtype)[
+            :
+        ] = num_atoms
         f.create_dataset("ptr", ptr.shape, dtype=ptr.dtype)[:] = ptr
 
         f.create_dataset("cell", cell.shape, dtype=cell.dtype)[:, :, :] = cell

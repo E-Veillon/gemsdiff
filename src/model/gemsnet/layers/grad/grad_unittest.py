@@ -168,113 +168,15 @@ class TestGrad(unittest.TestCase):
             return u.norm()
 
         t0 = time.time()
-        grad_g, grad_x_i, grad_x_j = grad_fn.grad_distance(rho, x_ij, g=g)
+        grad_g = grad_fn.grad_distance(rho, x_ij, g=g)
         t1 = time.time()
         self.log(f"grad distance {t1-t0:.6f}sec")
 
-        (gt_grad_g, _, gt_grad_x_ij) = self.batched_jacobian(
+        (gt_grad_g, _, _) = self.batched_jacobian(
             lambda g, rho, xij: get_distance(g, rho, xij), (g, rho, x_ij)
         )
-        gt_grad_x_i = -gt_grad_x_ij
-        gt_grad_x_j = gt_grad_x_ij
 
         self.assertAlmostEqualsTensors(gt_grad_g, grad_g, places=3)
-        self.assertAlmostEqualsTensors(gt_grad_x_i, grad_x_i, places=3)
-        self.assertAlmostEqualsTensors(gt_grad_x_j, grad_x_j, places=3)
-
-    def test_distance_sym(self):
-        torch.manual_seed(0)
-
-        grad_fn = Grad()
-
-        g = torch.randn(TestGrad.batch_size, 3, 3)
-        rho = torch.matrix_exp(torch.randn(TestGrad.batch_size, 3, 3))
-        x_ij = torch.randn(TestGrad.batch_size, 3)
-
-        def get_distance(g, rho, xij):
-            u = (g + g.t()) @ rho @ xij
-            return u.norm()
-
-        t0 = time.time()
-        grad_g, grad_x_i, grad_x_j = grad_fn.grad_distance_sym(rho, x_ij, g=g)
-        t1 = time.time()
-        self.log(f"grad distance sym {t1-t0:.6f}sec")
-
-        (gt_grad_g, _, gt_grad_x_ij) = self.batched_jacobian(
-            lambda g, rho, xij: get_distance(g, rho, xij), (g, rho, x_ij)
-        )
-        gt_grad_x_i = -gt_grad_x_ij
-        gt_grad_x_j = gt_grad_x_ij
-
-        self.assertAlmostEqualsTensors(gt_grad_g, grad_g, places=3)
-        self.assertAlmostEqualsTensors(gt_grad_x_i, grad_x_i, places=3)
-        self.assertAlmostEqualsTensors(gt_grad_x_j, grad_x_j, places=3)
-
-    def test_area(self):
-        torch.manual_seed(0)
-
-        grad_fn = Grad()
-
-        g = torch.randn(TestGrad.batch_size, 3, 3)
-        rho = torch.matrix_exp(torch.randn(TestGrad.batch_size, 3, 3))
-        x_ij = torch.randn(TestGrad.batch_size, 3)
-        x_ik = torch.randn(TestGrad.batch_size, 3)
-
-        def get_area(g, rho, xij, xik):
-            u = g @ rho @ xij
-            v = g @ rho @ xik
-            return 0.5 * torch.cross(u, v).norm()
-
-        t0 = time.time()
-        grad_g, grad_x_i, grad_x_j, grad_x_k = grad_fn.grad_area(rho, x_ij, x_ik, g=g)
-        t1 = time.time()
-        self.log(f"grad area {t1-t0:.6f}sec")
-
-        (gt_grad_g, _, gt_grad_x_ij, gt_grad_x_ik) = self.batched_jacobian(
-            lambda g, rho, xij, xik: get_area(g, rho, xij, xik), (g, rho, x_ij, x_ik)
-        )
-        gt_grad_x_i = -(gt_grad_x_ij + gt_grad_x_ik)
-        gt_grad_x_j = gt_grad_x_ij
-        gt_grad_x_k = gt_grad_x_ik
-
-        self.assertAlmostEqualsTensors(gt_grad_g, grad_g, places=2)
-        self.assertAlmostEqualsTensors(gt_grad_x_i, grad_x_i, places=2)
-        self.assertAlmostEqualsTensors(gt_grad_x_j, grad_x_j, places=2)
-        self.assertAlmostEqualsTensors(gt_grad_x_k, grad_x_k, places=2)
-
-    def test_area_sym(self):
-        torch.manual_seed(0)
-
-        grad_fn = Grad()
-
-        g = torch.randn(TestGrad.batch_size, 3, 3)
-        rho = torch.matrix_exp(torch.randn(TestGrad.batch_size, 3, 3))
-        x_ij = torch.randn(TestGrad.batch_size, 3)
-        x_ik = torch.randn(TestGrad.batch_size, 3)
-
-        def get_area(g, rho, xij, xik):
-            u = (g + g.t()) @ rho @ xij
-            v = (g + g.t()) @ rho @ xik
-            return 0.5 * torch.cross(u, v).norm()
-
-        t0 = time.time()
-        grad_g, grad_x_i, grad_x_j, grad_x_k = grad_fn.grad_area_sym(
-            rho, x_ij, x_ik, g=g
-        )
-        t1 = time.time()
-        self.log(f"grad area sym {t1-t0:.6f}sec")
-
-        (gt_grad_g, _, gt_grad_x_ij, gt_grad_x_ik) = self.batched_jacobian(
-            lambda g, rho, xij, xik: get_area(g, rho, xij, xik), (g, rho, x_ij, x_ik)
-        )
-        gt_grad_x_i = -(gt_grad_x_ij + gt_grad_x_ik)
-        gt_grad_x_j = gt_grad_x_ij
-        gt_grad_x_k = gt_grad_x_ik
-
-        self.assertAlmostEqualsTensors(gt_grad_g, grad_g, places=2)
-        self.assertAlmostEqualsTensors(gt_grad_x_i, grad_x_i, places=2)
-        self.assertAlmostEqualsTensors(gt_grad_x_j, grad_x_j, places=2)
-        self.assertAlmostEqualsTensors(gt_grad_x_k, grad_x_k, places=2)
 
     def test_angle(self):
         torch.manual_seed(0)
@@ -292,55 +194,15 @@ class TestGrad(unittest.TestCase):
             return torch.atan2(torch.cross(u, v).norm(), u.dot(v))
 
         t0 = time.time()
-        grad_g, grad_x_i, grad_x_j, grad_x_k = grad_fn.grad_angle(rho, x_ij, x_ik, g=g)
+        grad_g = grad_fn.grad_angle(rho, x_ij, x_ik, g=g)
         t1 = time.time()
         self.log(f"grad angle {t1-t0:.6f}sec")
 
-        (gt_grad_g, _, gt_grad_x_ij, gt_grad_x_ik) = self.batched_jacobian(
+        (gt_grad_g, _, _, _) = self.batched_jacobian(
             lambda g, rho, xij, xik: get_angle(g, rho, xij, xik), (g, rho, x_ij, x_ik)
         )
-        gt_grad_x_i = -(gt_grad_x_ij + gt_grad_x_ik)
-        gt_grad_x_j = gt_grad_x_ij
-        gt_grad_x_k = gt_grad_x_ik
 
         self.assertAlmostEqualsTensors(gt_grad_g, grad_g, places=4)
-        self.assertAlmostEqualsTensors(gt_grad_x_i, grad_x_i, places=4)
-        self.assertAlmostEqualsTensors(gt_grad_x_j, grad_x_j, places=4)
-        self.assertAlmostEqualsTensors(gt_grad_x_k, grad_x_k, places=4)
-
-    def test_angle_sym(self):
-        torch.manual_seed(0)
-
-        grad_fn = Grad()
-
-        g = torch.randn(TestGrad.batch_size, 3, 3)
-        rho = torch.matrix_exp(torch.randn(TestGrad.batch_size, 3, 3))
-        x_ij = torch.randn(TestGrad.batch_size, 3)
-        x_ik = torch.randn(TestGrad.batch_size, 3)
-
-        def get_angle(g, rho, xij, xik):
-            u = (g + g.t()) @ rho @ xij
-            v = (g + g.t()) @ rho @ xik
-            return torch.atan2(torch.cross(u, v).norm(), u.dot(v))
-
-        t0 = time.time()
-        grad_g, grad_x_i, grad_x_j, grad_x_k = grad_fn.grad_angle_sym(
-            rho, x_ij, x_ik, g=g
-        )
-        t1 = time.time()
-        self.log(f"grad angle sym {t1-t0:.6f}sec")
-
-        (gt_grad_g, _, gt_grad_x_ij, gt_grad_x_ik) = self.batched_jacobian(
-            lambda g, rho, xij, xik: get_angle(g, rho, xij, xik), (g, rho, x_ij, x_ik)
-        )
-        gt_grad_x_i = -(gt_grad_x_ij + gt_grad_x_ik)
-        gt_grad_x_j = gt_grad_x_ij
-        gt_grad_x_k = gt_grad_x_ik
-
-        self.assertAlmostEqualsTensors(gt_grad_g, grad_g, places=3)
-        self.assertAlmostEqualsTensors(gt_grad_x_i, grad_x_i, places=3)
-        self.assertAlmostEqualsTensors(gt_grad_x_j, grad_x_j, places=3)
-        self.assertAlmostEqualsTensors(gt_grad_x_k, grad_x_k, places=3)
 
 
 if __name__ == "__main__":

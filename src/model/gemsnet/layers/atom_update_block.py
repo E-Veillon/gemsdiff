@@ -9,9 +9,8 @@ import torch
 import torch.nn as nn
 from torch_scatter import scatter
 
-from ..initializers import he_orthogonal_init
+from .initializers import he_orthogonal_init
 from .base_layers import Dense, ResidualLayer
-from .scaling import ScalingFactor
 
 
 class AtomUpdateBlock(torch.nn.Module):
@@ -46,9 +45,6 @@ class AtomUpdateBlock(torch.nn.Module):
         self.name = name
 
         self.dense_rbf = Dense(emb_size_rbf, emb_size_edge, activation=None, bias=False)
-        # self.scale_sum = ScalingFactor(
-        #    scale_file=scale_file, name=name + "_sum"
-        # )
 
         self.layers = self.get_mlp(emb_size_edge, emb_size_atom, nHidden, activation)
 

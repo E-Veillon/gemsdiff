@@ -7,7 +7,7 @@ class StructuresList(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def get_num_atoms(self) -> torch.LongTensor:
+    def get_num_atoms(self, idx: torch.LongTensor = None) -> torch.LongTensor:
         pass
 
     @abstractmethod

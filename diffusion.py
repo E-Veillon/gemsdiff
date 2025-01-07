@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch_geometric.loader import DataLoader
-from torch_scatter import scatter_mean
+from torch.utils.data import random_split
 from torch_ema import ExponentialMovingAverage
 import pandas as pd
 import tqdm
@@ -15,173 +15,58 @@ import random
 import datetime
 
 from src.utils.scaler import LatticeScaler
-from src.utils.data import MP20, StructuresSampler
+from src.utils.data import MP, OQMD, StructuresSampler
 from src.utils.hparams import Hparams
-from src.utils.metrics import get_metrics
+from src.utils.metrics import compute_metrics
 from src.model.gemsnet import GemsNetDiffusion
 from src.utils.video import make_video
 from src.utils.cif import make_cif
 
 
 def get_dataloader(path: str, dataset: str, batch_size: int):
-    assert dataset in ["mp-20"]
+    assert dataset in ["mp", "oqmd"]
 
     dataset_path = os.path.join(path, dataset)
-    if dataset == "mp-20":
-        train_set = MP20(dataset_path, "train")
-        valid_set = MP20(dataset_path, "val")
-        test_set = MP20(dataset_path, "test")
+    if dataset == "mp":
+        data = MP(dataset_path)
+        gen = torch.Generator().manual_seed(42)
+        train_set, valid_set, test_set = random_split(
+            data, [78600, 4367, 4367], generator=gen
+        )
+    elif dataset == "oqmd":
+        data = OQMD(dataset_path)
+        gen = torch.Generator().manual_seed(42)
+        train_set, valid_set, test_set = random_split(
+            data, [199686, 11094, 11094], generator=gen
+        )
 
     loader_train = DataLoader(
         train_set,
         num_workers=4,
-        batch_sampler=StructuresSampler(train_set, batch_size, shuffle=True),
+        batch_sampler=StructuresSampler(train_set, max_atoms=batch_size, shuffle=True),
     )
-    loader_valid = DataLoader(valid_set, num_workers=4, batch_size=128)
-    loader_test = DataLoader(test_set, num_workers=4, batch_size=128)
+    loader_valid = DataLoader(valid_set, batch_size=64, num_workers=4)
+    loader_test = DataLoader(test_set, batch_size=64, num_workers=4)
 
     return loader_train, loader_valid, loader_test
 
 
-@torch.no_grad()
-def compute_metrics(model, dataloader, desc_bar):
-    list_losses = []
-    list_losses_pos = []
-    list_losses_lat = []
-
-    list_t = []
-    list_rho = []
-    list_rho_pred_lengths = []
-    list_rho_pred_angles = []
-    list_rho_pred = []
-    list_x = []
-    list_x_pred = []
-    list_x_t = []
-    list_num_atoms = []
-
-    step = model.diffusion_steps // 32
-    N = dataloader.batch_size * step // model.diffusion_steps
-    t = torch.arange(0, model.diffusion_steps, step)
-    size = t.shape[0]
-    t_idx = torch.arange(0, size)
-    t = t.repeat(N + 1).to(device)
-    t_idx = t_idx.repeat(N + 1)
-
-    for batch in tqdm.tqdm(dataloader, leave=False, position=1, desc=desc_bar):
-        batch = batch.to(device)
-
-        (
-            loss,
-            loss_pos,
-            loss_lattice,
-            x_t,
-            pred_rho,
-            pred_x,
-        ) = model.get_loss(
-            batch.cell,
-            batch.pos,
-            batch.z,
-            batch.num_atoms,
-            t=t[: batch.num_atoms.shape[0]],
-            return_data=True,
-        )
-
-        list_t.append(t_idx[: batch.num_atoms.shape[0]])
-        list_rho.append(batch.cell)
-        list_rho_pred_lengths.append(pred_rho[0])
-        list_rho_pred_angles.append(pred_rho[1])
-        list_x.append(batch.pos)
-        list_x_pred.append(pred_x)
-        list_x_t.append(x_t)
-        list_num_atoms.append(batch.num_atoms)
-
-        list_losses.append(loss.item())
-        list_losses_pos.append(loss_pos.item())
-        list_losses_lat.append(loss_lattice.item())
-
-    loss = {
-        "loss": torch.tensor(list_losses).mean().item(),
-        "pos": torch.tensor(list_losses_pos).mean().item(),
-        "lattice": torch.tensor(list_losses_lat).mean().item(),
-    }
-
-    list_t = torch.cat(list_t, dim=0)
-    list_rho = torch.cat(list_rho, dim=0)
-    print(len(list_rho_pred))
-    list_rho_pred_lengths = torch.cat(list_rho_pred_lengths, dim=0)
-    list_rho_pred_angles = torch.cat(list_rho_pred_angles, dim=0)
-    list_rho_pred = (list_rho_pred_lengths, list_rho_pred_angles)
-    list_x = torch.cat(list_x, dim=0)
-    list_x_pred = torch.cat(list_x_pred, dim=0)
-    list_x_t = torch.cat(list_x_t, dim=0)
-    list_num_atoms = torch.cat(list_num_atoms, dim=0)
-
-    metrics = get_metrics(
-        list_rho,
-        list_rho_pred,
-        list_x,
-        list_x_pred,
-        list_num_atoms,
-        by_structure=True,
-    )
-    metrics_gt = get_metrics(
-        list_rho,
-        None,
-        list_x,
-        list_x_t,
-        list_num_atoms,
-        by_structure=True,
-    )
-
-    metrics["mae_pos_by_t"] = scatter_mean(
-        metrics["mae_pos"], list_t, dim=0, dim_size=size
-    )
-    metrics["mae_lengths_by_t"] = scatter_mean(
-        metrics["mae_lengths"].mean(dim=1), list_t, dim=0, dim_size=size
-    )
-    metrics["mae_angles_by_t"] = scatter_mean(
-        metrics["mae_angles"].mean(dim=1), list_t, dim=0, dim_size=size
-    )
-
-    metrics_gt["mae_pos_by_t"] = scatter_mean(
-        metrics_gt["mae_pos"], list_t, dim=0, dim_size=size
-    )
-
-    t = torch.arange(0, metrics["mae_pos_by_t"].shape[0]) * step
-
-    metrics["t"] = t
-    metrics["mae_pos"] = metrics["mae_pos"]
-    metrics["mae_lengths"] = metrics["mae_lengths"]
-    metrics["mae_angles"] = metrics["mae_angles"]
-
-    metrics_gt["t"] = t
-    metrics_gt["mae_pos"] = metrics_gt["mae_pos"]
-
-    return loss, metrics, metrics_gt
-
-
-def add_tensorboard(writer, loss, metrics, metrics_gt, path, batch_idx):
+def add_tensorboard(writer, metrics, path, batch_idx):
     plt.scatter(metrics["t"], metrics["mae_pos_by_t"], label="gnn")
-    plt.scatter(metrics_gt["t"], metrics_gt["mae_pos_by_t"], label="no action")
+    plt.scatter(metrics["t"], metrics["mae_pos_diff_by_t"], label="no action")
     plt.legend()
     writer.add_figure(f"{path}/mae_pos", plt.gcf(), batch_idx)
-    plt.close()
-    plt.scatter(metrics["t"], metrics["mae_lengths_by_t"], label="gnn")
-    plt.legend()
-    writer.add_figure(f"{path}/mae_lengths", plt.gcf(), batch_idx)
-    plt.close()
-    plt.scatter(metrics["t"], metrics["mae_angles_by_t"], label="gnn")
-    plt.legend()
-    writer.add_figure(f"{path}/mae_angles", plt.gcf(), batch_idx)
     plt.close()
 
     writer.add_scalar(f"{path}/mae_pos", metrics["mae_pos"].mean(), batch_idx)
     writer.add_scalar(f"{path}/mae_lengths", metrics["mae_lengths"].mean(), batch_idx)
     writer.add_scalar(f"{path}/mae_angles", metrics["mae_angles"].mean(), batch_idx)
 
-    writer.add_scalar(f"{path}/loss", loss["loss"], batch_idx)
-    writer.add_scalar(f"{path}/loss_pos", loss["pos"], batch_idx)
-    writer.add_scalar(f"{path}/loss_lattice", loss["lattice"], batch_idx)
+    writer.add_scalar(
+        f"{path}/loss", metrics["loss_pos"] + metrics["loss_lattice"], batch_idx
+    )
+    writer.add_scalar(f"{path}/loss_pos", metrics["loss_pos"], batch_idx)
+    writer.add_scalar(f"{path}/loss_lattice", metrics["loss_lattice"], batch_idx)
 
 
 if __name__ == "__main__":
@@ -192,7 +77,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="train denoising model")
     parser.add_argument("--hparams", "-H", default=None, help="json file")
     parser.add_argument("--logs", "-l", default="./runs/diffusion")
-    parser.add_argument("--dataset", "-D", default="mp-20")
+    parser.add_argument("--dataset", "-D", default="oqmd")
     parser.add_argument("--dataset-path", "-dp", default="./data")
     parser.add_argument("--device", "-d", default="cuda")
     parser.add_argument("--threads", "-t", type=int, default=8)
@@ -238,6 +123,7 @@ if __name__ == "__main__":
     model = GemsNetDiffusion(
         lattice_scaler=scaler,
         knn=hparams.knn,
+        num_blocks=hparams.layers,
         x_betas=hparams.x_betas,
         diffusion_steps=hparams.diffusion_steps,
     ).to(device)
@@ -296,24 +182,24 @@ if __name__ == "__main__":
         pd.DataFrame(logs).set_index("batch").to_csv(os.path.join(log_dir, "loss.csv"))
 
         with ema.average_parameters():
-            loss, metrics, metrics_gt = compute_metrics(
-                model, loader_valid, "validation"
-            )
-            add_tensorboard(writer, loss, metrics, metrics_gt, "valid", batch_idx)
+            metrics = compute_metrics(model, loader_valid, "validation", device)
+            add_tensorboard(writer, metrics, "valid", batch_idx)
 
-            if loss["loss"] < best_val:
+            total_loss = metrics["loss_pos"] + metrics["loss_lattice"]
+            if total_loss < best_val:
                 torch.save(model.state_dict(), os.path.join(log_dir, "best.pt"))
-                loss["loss"] = best_val
+                best_val = total_loss
 
     for batch in loader_test:
         batch = batch.to(device)
+        break
 
-        limit_batch_size = 16
-        batch.num_atoms = batch.num_atoms[:limit_batch_size]
-        batch.cell = batch.cell[:limit_batch_size]
-        max_atoms = batch.num_atoms.sum()
-        batch.pos = batch.pos[:max_atoms]
-        batch.z = batch.z[:max_atoms]
+    limit_batch_size = 16
+    batch.num_atoms = batch.num_atoms[:limit_batch_size]
+    batch.cell = batch.cell[:limit_batch_size]
+    max_atoms = batch.num_atoms.sum()
+    batch.pos = batch.pos[:max_atoms]
+    batch.z = batch.z[:max_atoms]
 
     rho, x = model.sampling(batch.z, batch.num_atoms, return_history=True, verbose=True)
 
@@ -326,13 +212,13 @@ if __name__ == "__main__":
 
     # writer.add_video("sampling", video_tensor)
 
-    loss, metrics, metrics_gt = compute_metrics(model, loader_test, "test")
-    add_tensorboard(writer, loss, metrics, metrics_gt, "test", batch_idx)
+    metrics = compute_metrics(model, loader_test, "test", device)
+    add_tensorboard(writer, metrics, "test", batch_idx)
 
     metrics = {
-        "loss": loss["loss"],
-        "loss_pos": loss["pos"],
-        "loss_lattice": loss["lattice"],
+        "loss": metrics["loss_pos"] + metrics["loss_lattice"],
+        "loss_pos": metrics["loss_pos"],
+        "loss_lattice": metrics["loss_lattice"],
         "mae_pos": metrics["mae_pos"].mean().item(),
         "mae_lengths": metrics["mae_lengths"].mean().item(),
         "mae_angles": metrics["mae_angles"].mean().item(),

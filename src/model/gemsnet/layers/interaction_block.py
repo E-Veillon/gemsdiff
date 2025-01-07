@@ -15,7 +15,6 @@ from .efficient import (
     EfficientInteractionBilinear,
 )
 from .embedding_block import EdgeEmbedding
-from .scaling import ScalingFactor
 
 
 class InteractionBlockTripletsOnly(torch.nn.Module):
@@ -267,17 +266,9 @@ class TripletInteraction(torch.nn.Module):
             activation=None,
             bias=False,
         )
-        # self.scale_rbf = ScalingFactor(
-        #    scale_file=scale_file, name=name + "_had_rbf"
-        # )
-
         self.mlp_cbf = EfficientInteractionBilinear(
             emb_size_trip, emb_size_cbf, emb_size_bilinear
         )
-        # self.scale_cbf_sum = ScalingFactor(
-        #    scale_file=scale_file, name=name + "_sum_cbf"
-        # )  # combines scaling for bilinear layer and summation
-
         # Down and up projections
         self.down_projection = Dense(
             emb_size_edge,

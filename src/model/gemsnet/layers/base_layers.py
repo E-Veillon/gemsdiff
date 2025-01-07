@@ -9,7 +9,7 @@ import math
 
 import torch
 
-from ..initializers import he_orthogonal_init
+from .initializers import he_orthogonal_init
 
 
 class Dense(torch.nn.Module):
@@ -89,18 +89,11 @@ class ResidualLayer(torch.nn.Module):
             Keyword arguments for initializing the layers.
     """
 
-    def __init__(
-        self, units: int, nLayers: int = 2, layer=Dense, **layer_kwargs
-    ):
+    def __init__(self, units: int, nLayers: int = 2, layer=Dense, **layer_kwargs):
         super().__init__()
         self.dense_mlp = torch.nn.Sequential(
             *[
-                layer(
-                    in_features=units,
-                    out_features=units,
-                    bias=False,
-                    **layer_kwargs
-                )
+                layer(in_features=units, out_features=units, bias=False, **layer_kwargs)
                 for _ in range(nLayers)
             ]
         )
