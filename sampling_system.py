@@ -1,35 +1,32 @@
 import torch
 from torch_geometric.loader import DataLoader
-from torch.utils.data import random_split
 
 import tqdm
 
 import os
 
 from src.utils.scaler import LatticeScaler
-from src.utils.data import MP, OQMD, StructuresSampler
+from src.utils.data.system import SystemDataset
 from src.utils.hparams import Hparams
 from src.model.gemsnet import GemsNetDiffusion
 from src.utils.cif import make_cif
 
+
 def get_dataloader(path: str, dataset: str, batch_size: int):
-    assert dataset in ["mp", "oqmd"]
+    assert dataset in ["mp-20", "oqmd"]
 
     dataset_path = os.path.join(path, dataset)
-    if dataset == "mp":
-        data = MP(dataset_path)
-        gen = torch.Generator().manual_seed(42)
-        train_set, valid_set, test_set = random_split(
-            data, [78600, 4367, 4367], generator=gen
-        )
+    if dataset == "mp-20":
+        test_set = MP20(dataset_path, "test")
     elif dataset == "oqmd":
         data = OQMD(dataset_path)
         gen = torch.Generator().manual_seed(42)
-        train_set, valid_set, test_set = random_split(
-                data, [199686, 11094, 11094], generator=gen
-        )
+        a=int(0.9*len(data))
+        b=int(0.05*len(data))
+        c=len(data)-a-b
+        _, _, test_set = random_split(data, [a,b,c], generator=gen)
 
-    loader_test = DataLoader(test_set, batch_size=64, num_workers=4)
+    loader_test = DataLoader(test_set, batch_size=batch_size, num_workers=4)
 
     return loader_test
 
@@ -40,10 +37,9 @@ if __name__ == "__main__":
     from torch.utils.tensorboard import SummaryWriter
 
     parser = argparse.ArgumentParser(description="train denoising model")
+    parser.add_argument("system")
     parser.add_argument("--checkpoint", "-c")
     parser.add_argument("--output", "-o", default="sampling.cif")
-    parser.add_argument("--dataset", "-D", default="oqmd")
-    parser.add_argument("--dataset-path", "-dp", default="./data")
     parser.add_argument("--device", "-d", default="cuda")
     parser.add_argument("--threads", "-t", type=int, default=8)
 
@@ -58,7 +54,8 @@ if __name__ == "__main__":
     hparams = Hparams()
     hparams.from_json(os.path.join(args.checkpoint, "hparams.json"))
 
-    loader_test = get_dataloader(args.dataset_path, args.dataset, 512)
+    dataset = SystemDataset(args.system.split("-"))
+    loader = DataLoader(dataset, batch_size=128,num_workers=0)
 
     scaler = LatticeScaler().to(device)
 
@@ -78,7 +75,7 @@ if __name__ == "__main__":
 
     with torch.no_grad():
         rho, x, z, num_atoms = [], [], [], []
-        for idx, batch in enumerate(tqdm.tqdm(loader_test)):
+        for idx, batch in enumerate(tqdm.tqdm(loader)):
             batch = batch.to(device)
 
             pred_rho, pred_x = model.sampling(batch.z, batch.num_atoms, verbose=True)
@@ -88,14 +85,12 @@ if __name__ == "__main__":
             z.append(batch.z)
             num_atoms.append(batch.num_atoms)
 
-            cat_rho, cat_x, cat_z, cat_num_atoms = (
-                torch.cat(rho, dim=0),
-                torch.cat(x, dim=0),
-                torch.cat(z, dim=0),
-                torch.cat(num_atoms, dim=0),
-            )
-
-            cif = make_cif(cat_rho, cat_x, cat_z, cat_num_atoms)
-
-            with open(args.output, "w") as fp:
-                fp.write(cif)
+        cat_rho, cat_x, cat_z, cat_num_atoms = (
+            torch.cat(rho, dim=0),
+            torch.cat(x, dim=0),
+            torch.cat(z, dim=0),
+            torch.cat(num_atoms, dim=0),
+        )
+        cif = make_cif(cat_rho, cat_x, cat_z, cat_num_atoms)
+        with open(args.output,"w") as fp:
+            fp.write(cif)

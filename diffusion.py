@@ -15,7 +15,7 @@ import random
 import datetime
 
 from src.utils.scaler import LatticeScaler
-from src.utils.data import MP20, OQMD, StructuresSampler
+from src.utils.data import MP, OQMD, StructuresSampler
 from src.utils.hparams import Hparams
 from src.utils.metrics import compute_metrics
 from src.model.gemsnet import GemsNetDiffusion
@@ -24,18 +24,20 @@ from src.utils.cif import make_cif
 
 
 def get_dataloader(path: str, dataset: str, batch_size: int):
-    assert dataset in ["mp-20", "oqmd"]
+    assert dataset in ["mp", "oqmd"]
 
     dataset_path = os.path.join(path, dataset)
-    if dataset == "mp-20":
-        train_set = MP20(dataset_path, "train")
-        valid_set = MP20(dataset_path, "val")
-        test_set = MP20(dataset_path, "test")
+    if dataset == "mp":
+        data = MP(dataset_path)
+        gen = torch.Generator().manual_seed(42)
+        train_set, valid_set, test_set = random_split(
+            data, [78600, 4367, 4367], generator=gen
+        )
     elif dataset == "oqmd":
         data = OQMD(dataset_path)
         gen = torch.Generator().manual_seed(42)
         train_set, valid_set, test_set = random_split(
-            data, [0.9, 0.05, 0.05], generator=gen
+                data, [199686, 11094, 11094], generator=gen
         )
 
     loader_train = DataLoader(
