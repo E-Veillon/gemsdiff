@@ -31,12 +31,20 @@ Install other dependancies
 pip3 install torch-ema pandas tqdm matplotlib h5py pymatgen ase tensorboard
 ```
 
-## Sampling structures of a given system from checkpoint
+## Sampling a specific composition
 
-Sampling structure from the Ti-O system (with the provided checkpoint train on Materials Project)
+Sampling LiFeO2 from a checkpoint (OQMD)
 
 ```bash
-python3 sampling_system.py Ti-O -c runs/without_cell_diffusion/training_2024_02_23_01_40_14_mp_110
+python sampling.py LiFeO2 -c runs/without_cell_diffusion/training_2024_02_23_16_13_55_oqmd_604 -o LiFeO2.cif
+```
+
+## Sampling structures of a given system from checkpoint
+
+Sampling structure from the Ti-O system from a checkpoint (Materials Project)
+
+```bash
+python3 sampling_system.py Ti-O -c runs/without_cell_diffusion/training_2024_02_23_01_40_14_mp_110 -o Ti-O.cif
 ```
 
 ## How to cite

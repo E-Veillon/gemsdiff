@@ -2,6 +2,8 @@ import torch
 from torch_geometric.loader import DataLoader
 from torch.utils.data import random_split
 
+from ase.formula import Formula
+from ase import data
 import tqdm
 
 import os
@@ -41,10 +43,9 @@ if __name__ == "__main__":
     from torch.utils.tensorboard import SummaryWriter
 
     parser = argparse.ArgumentParser(description="train denoising model")
+    parser.add_argument("formula")
     parser.add_argument("--checkpoint", "-c")
     parser.add_argument("--output", "-o", default="sampling.cif")
-    parser.add_argument("--dataset", "-D", default="oqmd")
-    parser.add_argument("--dataset-path", "-dp", default="./data")
     parser.add_argument("--device", "-d", default="cuda")
     parser.add_argument("--threads", "-t", type=int, default=8)
 
@@ -59,7 +60,13 @@ if __name__ == "__main__":
     hparams = Hparams()
     hparams.from_json(os.path.join(args.checkpoint, "hparams.json"))
 
-    loader_test = get_dataloader(args.dataset_path, args.dataset, 512)
+    input_num_atoms = 0
+    input_z = []
+    for chem, n in Formula(args.formula).count().items():
+        input_num_atoms += n
+        input_z += [data.atomic_numbers[chem]] * n
+    input_num_atoms = torch.tensor([input_num_atoms], dtype=torch.long)
+    input_z = torch.tensor(input_z, dtype=torch.long)
 
     scaler = LatticeScaler().to(device)
 
@@ -73,30 +80,21 @@ if __name__ == "__main__":
     ).to(device)
 
     model.load_state_dict(
-        torch.load(os.path.join(args.checkpoint, "best.pt")), strict=False
+        torch.load(
+            os.path.join(args.checkpoint, "best.pt"), map_location=torch.device(device)
+        ),
+        strict=False,
     )
     model.eval()
 
     with torch.no_grad():
-        rho, x, z, num_atoms = [], [], [], []
-        for idx, batch in enumerate(tqdm.tqdm(loader_test)):
-            batch = batch.to(device)
 
-            pred_rho, pred_x = model.sampling(batch.z, batch.num_atoms, verbose=True)
+        input_z = input_z.to(device)
+        input_num_atoms = input_num_atoms.to(device)
 
-            rho.append(pred_rho)
-            x.append(pred_x)
-            z.append(batch.z)
-            num_atoms.append(batch.num_atoms)
+        pred_rho, pred_x = model.sampling(input_z, input_num_atoms, verbose=True)
 
-            cat_rho, cat_x, cat_z, cat_num_atoms = (
-                torch.cat(rho, dim=0),
-                torch.cat(x, dim=0),
-                torch.cat(z, dim=0),
-                torch.cat(num_atoms, dim=0),
-            )
+        cif = make_cif(pred_rho, pred_x, input_z, input_num_atoms)
 
-            cif = make_cif(cat_rho, cat_x, cat_z, cat_num_atoms)
-
-            with open(args.output, "w") as fp:
-                fp.write(cif)
+        with open(args.output, "w") as fp:
+            fp.write(cif)
