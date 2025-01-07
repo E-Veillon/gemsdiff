@@ -41,10 +41,10 @@ python sampling.py LiFeO2 -c runs/without_cell_diffusion/training_2024_02_23_16_
 
 ## Sampling structures of a given system from checkpoint
 
-Sampling structure from the Ti-O system from a checkpoint (Materials Project)
+Sampling structure from the Li-Fe-O system from a checkpoint (Materials Project)
 
 ```bash
-python3 sampling_system.py Ti-O -c runs/without_cell_diffusion/training_2024_02_23_01_40_14_mp_110 -o Ti-O.cif
+python3 sampling_system.py Li-Fe-O -c runs/without_cell_diffusion/training_2024_02_23_01_40_14_mp_110 -o Li-Fe-O.cif
 ```
 
 ## How to cite
