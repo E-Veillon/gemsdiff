@@ -1,13 +1,48 @@
+"""Download and handle CDVAE team's curated dataset 'Perov-5'."""
 import os
 import urllib.request
 
 from .csv_dataset import CSVDataset
 from src.utils.download_bar import DownloadProgressBar
+#from .data_base_classes import CSVDataset, DownloadProgressBar
+
 
 url_perov5 = "https://raw.githubusercontent.com/txie-93/cdvae/main/data/perov_5/"
 
 
 class Perov5(CSVDataset):
+    """
+    Download and handle CDVAE team's curated dataset 'Perov-5'.
+    
+    Parameters:
+        root (str):                         Root directory where the dataset should be saved.
+
+        subset (str):                       Whether to download the 'train', 'val' or 'test'
+                                            set of Perov-5 dataset.
+
+        transform (callable, optional):     A function/transform that takes in a
+                                            :class:`~torch_geometric.data.Data` or
+                                            :class:`~torch_geometric.data.HeteroData` object
+                                            and returns a transformed version.
+                                            The data object will be transformed before every access.
+                                            (default: :obj:`None`)
+
+        pre_filter (callable, optional):    A function that takes in a
+                                            :class:`~torch_geometric.data.Data` or
+                                            :class:`~torch_geometric.data.HeteroData` object
+                                            and returns a boolean value, indicating whether the data
+                                            object should be included in the final dataset.
+                                            (default: :obj:`None`)
+
+        warn (bool):                        Whether to issue warnings while processing the dataset.
+                                            Defaults to False.
+
+        multithread (bool):                 Whether to use parallel behavior to process data faster.
+                                            Defaults to True.
+
+        verbose (bool):                     Whether to print the number of loaded structures and show
+                                            processing advancement as a progress bar. Defaults to True.
+    """
     def __init__(
         self,
         root: str,
@@ -66,5 +101,5 @@ class Perov5(CSVDataset):
         self.process_csv(
             raw_file,
             processed_file,
-            loading_description=f"proprocess {self.subset} set of MP-20",
+            loading_description=f"preprocess {self.subset} set of Perov-5",
         )

@@ -1,3 +1,4 @@
+"""A dataset class to load and handle chemical compositions from given JSON file."""
 from collections.abc import Sequence
 from typing import Iterator
 from torch_geometric.data import InMemoryDataset, Data
@@ -18,7 +19,21 @@ str_to_z = symboles | names
 
 
 class CompositionDataset(InMemoryDataset, StructuresList):
+    """
+    A dataset class to load and handle chemical compositions represented as lists
+    of constitutive elements symbols or atomic numbers from a JSON file.
+
+    Parameters:
+        file (str): Path to the JSON file to load compositions from.
+    """
     def __init__(self, file: str):
+        """
+        A dataset class to load and handle chemical compositions represented as lists
+        of constitutive elements symbols or atomic numbers from a JSON file.
+
+        Parameters:
+            file (str): Path to the JSON file to load compositions from.
+        """
         self.file = file
 
         self.transform = None
@@ -45,11 +60,11 @@ class CompositionDataset(InMemoryDataset, StructuresList):
             for elem in comp:
                 if isinstance(elem, str):
                     z = str_to_z.get(elem, None)
-                    assert z is not None, f"{elem} value is unkown"
+                    assert z is not None, f"{elem} value is unknown"
                 elif isinstance(elem, int):
                     z = elem
                 else:
-                    raise Exception(f"{elem} value is unkown")
+                    raise Exception(f"{elem} value is unknown")
                 elems.append(z)
             list_comp.append(elems)
         self.z = torch.tensor(sum(list_comp, []))

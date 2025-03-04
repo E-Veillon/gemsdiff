@@ -22,7 +22,7 @@ import json
 from .dataset import StructuresList
 
 
-def process_cif(args):
+def _process_cif(args):
     (cif, warning_queue) = args
 
     with warnings.catch_warnings(record=True) as ws:
@@ -56,6 +56,10 @@ def process_cif(args):
 
 
 class CSVDataset(InMemoryDataset, StructuresList, metaclass=ABCMeta):
+    """
+    Abstract dataset class to be subclassed for handling of Comma-Separated Values (CSV)
+    formatted datasets.
+    """
     def __init__(
         self,
         root: str,
@@ -65,6 +69,35 @@ class CSVDataset(InMemoryDataset, StructuresList, metaclass=ABCMeta):
         multithread: bool = True,
         verbose: bool = True,
     ):
+        """
+        Abstract dataset class to be subclassed for handling of Comma-Separated Values (CSV) formatted datasets.
+
+        Parameters:
+            root (str):                         Root directory where the dataset should be saved.
+
+            transform (callable, optional):     A function/transform that takes in a
+                                                :class:`~torch_geometric.data.Data` or
+                                                :class:`~torch_geometric.data.HeteroData` object
+                                                and returns a transformed version.
+                                                The data object will be transformed before every access.
+                                                (default: :obj:`None`)
+
+            pre_filter (callable, optional):    A function that takes in a
+                                                :class:`~torch_geometric.data.Data` or
+                                                :class:`~torch_geometric.data.HeteroData` object
+                                                and returns a boolean value, indicating whether the data
+                                                object should be included in the final dataset.
+                                                (default: :obj:`None`)
+
+            warn (bool):                        Whether to issue warnings while processing the dataset.
+                                                Defaults to False.
+
+            multithread (bool):                 Whether to use parallel behavior to process data faster.
+                                                Defaults to True.
+
+            verbose (bool):                     Whether to print the number of loaded structures and show
+                                                processing advancement as a progress bar. Defaults to True.
+        """
         self.warn = warn
         self.multithread = multithread
         self.verbose = verbose
@@ -167,14 +200,14 @@ class CSVDataset(InMemoryDataset, StructuresList, metaclass=ABCMeta):
         if self.multithread:
             if self.verbose:
                 results = process_map(
-                    process_cif,
+                    _process_cif,
                     iterator,
                     desc=loading_description,
                     chunksize=8,
                 )
             else:
                 with mp.Pool(mp.cpu_count()) as p:
-                    results = p.map(process_cif, iterator)
+                    results = p.map(_process_cif, iterator)
         else:
             results = []
 
@@ -182,7 +215,7 @@ class CSVDataset(InMemoryDataset, StructuresList, metaclass=ABCMeta):
                 iterator = tqdm(iterator, desc=loading_description, total=len(df))
 
             for args in iterator:
-                results.append(process_cif(args))
+                results.append(_process_cif(args))
 
         if self.warn:
             warnings_type = {}

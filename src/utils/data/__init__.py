@@ -1,3 +1,4 @@
+"""Modules to download datasets from the Internet and handle them conveniently."""
 from .materials_project import MaterialsProject
 from .mp20 import MP20
 from .mp import MP

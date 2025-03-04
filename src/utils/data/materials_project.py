@@ -1,3 +1,4 @@
+"""Download and handle Materials Project dataset (April 1st 2019 version)."""
 import torch
 import numpy as np
 import h5py
@@ -15,6 +16,7 @@ import warnings
 import multiprocessing as mp
 
 from src.utils.download_bar import DownloadProgressBar
+#from .data_base_classes import DownloadProgressBar
 
 url_mp_2019 = "https://figshare.com/ndownloader/files/15108200/mp.2019.04.01.json.zip"
 
@@ -53,6 +55,30 @@ def process_cif(args):
 
 
 class MaterialsProject(InMemoryDataset):
+    """
+    TODO: class description.
+
+    Parameters:
+        root (str):                         Root directory where the dataset should be saved.
+                                            Defaults to './data/mp'.
+
+        transform (callable, optional):     A function/transform that takes in a
+                                            :class:`~torch_geometric.data.Data` or
+                                            :class:`~torch_geometric.data.HeteroData` object
+                                            and returns a transformed version.
+                                            The data object will be transformed before every access.
+                                            (default: :obj:`None`)
+
+        pre_filter (callable, optional):    A function that takes in a
+                                            :class:`~torch_geometric.data.Data` or
+                                            :class:`~torch_geometric.data.HeteroData` object
+                                            and returns a boolean value, indicating whether the data
+                                            object should be included in the final dataset.
+                                            (default: :obj:`None`)
+
+        warn (bool):                        Whether to issue warnings while processing the dataset.
+                                            Defaults to True.
+    """
     def __init__(
         self,
         root: str = "./data/mp",

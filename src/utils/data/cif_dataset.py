@@ -1,4 +1,5 @@
-from typing import Iterator, Sequence
+"""Abstract dataset class to be subclassed for handling of Crystallographic Information File (CIF) formatted datasets."""
+from typing import Iterator, Sequence, Any
 from torch_geometric.data import InMemoryDataset, Data
 from torch_geometric.loader import DataLoader
 
@@ -7,6 +8,7 @@ import torch
 import numpy as np
 from pymatgen.core.structure import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
+from ase import Atoms
 from ase.io import iread
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
@@ -21,9 +23,7 @@ import json
 from .dataset import StructuresList
 
 
-def process_cif(args):
-    atoms = args
-
+def _process_atoms(atoms: Atoms) -> dict[str, Any]:
     cell = atoms.cell.array.astype(np.float32)
     z = np.array(atoms.get_atomic_numbers(), dtype=np.int64)
     pos = atoms.get_scaled_positions().astype(np.float32)
@@ -37,6 +37,35 @@ def process_cif(args):
 
 
 class CIFDataset(InMemoryDataset, StructuresList, metaclass=ABCMeta):
+    """
+    Abstract dataset class to be subclassed for handling of Crystallographic Information File (CIF) formatted datasets.
+    
+    Parameters:
+        root (str):                         Root directory where the dataset should be saved.
+
+        transform (callable, optional):     A function/transform that takes in a
+                                            :class:`~torch_geometric.data.Data` or
+                                            :class:`~torch_geometric.data.HeteroData` object
+                                            and returns a transformed version.
+                                            The data object will be transformed before every access.
+                                            (default: :obj:`None`)
+
+        pre_filter (callable, optional):    A function that takes in a
+                                            :class:`~torch_geometric.data.Data` or
+                                            :class:`~torch_geometric.data.HeteroData` object
+                                            and returns a boolean value, indicating whether the data
+                                            object should be included in the final dataset.
+                                            (default: :obj:`None`)
+
+        warn (bool):                        TODO: unused argument ? (only used in CSVDataset ABC).
+                                            Defaults to False.
+
+        multithread (bool):                 Whether to use parallel behavior to process data faster.
+                                            Defaults to True.
+
+        verbose (bool):                     Whether to print the number of loaded structures and show
+                                            processing advancement as a progress bar. Defaults to True.
+    """
     def __init__(
         self,
         root: str,
@@ -46,6 +75,35 @@ class CIFDataset(InMemoryDataset, StructuresList, metaclass=ABCMeta):
         multithread: bool = True,
         verbose: bool = True,
     ):
+        """
+        Abstract dataset class to be subclassed for handling of Crystallographic Information File (CIF) formatted datasets.
+
+        Parameters:
+            root (str):                         Root directory where the dataset should be saved.
+
+            transform (callable, optional):     A function/transform that takes in a
+                                                :class:`~torch_geometric.data.Data` or
+                                                :class:`~torch_geometric.data.HeteroData` object
+                                                and returns a transformed version.
+                                                The data object will be transformed before every access.
+                                                (default: :obj:`None`)
+
+            pre_filter (callable, optional):    A function that takes in a
+                                                :class:`~torch_geometric.data.Data` or
+                                                :class:`~torch_geometric.data.HeteroData` object
+                                                and returns a boolean value, indicating whether the data
+                                                object should be included in the final dataset.
+                                                (default: :obj:`None`)
+
+            warn (bool):                        TODO: unused argument ? (only used in CSVDataset ABC).
+                                                Defaults to False.
+
+            multithread (bool):                 Whether to use parallel behavior to process data faster.
+                                                Defaults to True.
+
+            verbose (bool):                     Whether to print the number of loaded structures and show
+                                                processing advancement as a progress bar. Defaults to True.
+        """
         self.warn = warn
         self.multithread = multithread
         self.verbose = verbose
@@ -140,14 +198,14 @@ class CIFDataset(InMemoryDataset, StructuresList, metaclass=ABCMeta):
         if self.multithread:
             if self.verbose:
                 results = process_map(
-                    process_cif,
+                    _process_atoms,
                     iterator,
                     desc=loading_description,
                     chunksize=8,
                 )
             else:
                 with mp.Pool(mp.cpu_count()) as p:
-                    results = p.map(process_cif, iterator)
+                    results = p.map(_process_atoms, iterator)
         else:
             results = []
 
@@ -155,7 +213,7 @@ class CIFDataset(InMemoryDataset, StructuresList, metaclass=ABCMeta):
                 iterator = tqdm(iterator, desc=loading_description)
 
             for args in iterator:
-                results.append(process_cif(args))
+                results.append(_process_atoms(args))
 
         material_id = np.arange(len(results), dtype=np.int32)
 

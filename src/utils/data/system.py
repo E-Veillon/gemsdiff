@@ -1,3 +1,4 @@
+"""A class to generate and handle a wide set of chemical compositions included in given chemical system."""
 from collections.abc import Sequence
 from typing import Iterator
 from torch_geometric.data import InMemoryDataset, Data
@@ -16,6 +17,25 @@ symboles = {s: z for z, s in enumerate(chemical_symbols)}
 
 
 class SystemDataset(InMemoryDataset):
+    """
+    Generate and handle a wide set of compositions included in given chemical system.
+    Only binary (len = 2), ternary (len = 3) and quaternary (len = 4) systems are supported.
+
+    Parameters:
+        system ([str]):                 List of the elements to include in the chemical system.
+                                        Only binary, ternary and quaternary systems are supported.
+
+        n (int):                        Total number of atoms in generated composition formulas
+                                        (e.g. n=6 with a binary system will generate A6, A5B1,
+                                        ..., A1B5, B6). Defaults to 16.
+
+        multiple (int):                 Maximum multiplicity of generated formulas.
+                                        All integer multiples inferior or equal to this value
+                                        will be generated. Defaults to 4.
+
+        sample_per_composition (int):   Number of times each composition is generated.
+                                        Defaults to 128.
+    """
     def __init__(
         self,
         system: List[str],
@@ -23,6 +43,7 @@ class SystemDataset(InMemoryDataset):
         multiple: int = 4,
         sample_per_compositon: int = 128,
     ):
+        """Init."""
         assert len(system) in (2, 3, 4)
         self.system = torch.tensor([symboles[sym] for sym in system], dtype=torch.long)
 
@@ -35,6 +56,7 @@ class SystemDataset(InMemoryDataset):
 
                 for mul in range(multiple):
                     comp_list.append(c * (mul + 1))
+
         elif len(system) == 3:
             for i in range(n):
                 for j in range(n - i + 1):
@@ -44,6 +66,7 @@ class SystemDataset(InMemoryDataset):
 
                     for mul in range(multiple):
                         comp_list.append(c * (mul + 1))
+
         else:
             for i in range(n):
                 for j in range(n - i + 1):
@@ -58,7 +81,6 @@ class SystemDataset(InMemoryDataset):
                             comp_list.append(c * (mul + 1))
 
         self.compositions = torch.stack(comp_list * sample_per_compositon, dim=0)
-
         self.transform = None
         self.pre_transform = None
         self.pre_filter = None
@@ -97,3 +119,4 @@ class SystemDataset(InMemoryDataset):
         z = self.system.repeat(idx.shape[0]).repeat_interleave(comp.flatten())
 
         return Data(z=z, num_atoms=num_atoms)
+

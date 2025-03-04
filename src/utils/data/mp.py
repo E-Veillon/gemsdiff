@@ -1,10 +1,40 @@
+"""Handle local dataset file built from Materials Project in CIF format."""
 import os
 import urllib.request
 
 from .cif_dataset import CIFDataset
+#from .data_base_classes import CIFDataset
 
 
 class MP(CIFDataset):
+    """
+    Handle local dataset file built from Materials Project in CIF format.
+
+    Parameters:
+        root (str):                         Root directory where the dataset should be saved.
+
+        transform (callable, optional):     A function/transform that takes in a
+                                            :class:`~torch_geometric.data.Data` or
+                                            :class:`~torch_geometric.data.HeteroData` object
+                                            and returns a transformed version.
+                                            The data object will be transformed before every access.
+                                            (default: :obj:`None`)
+
+        pre_filter (callable, optional):    A function that takes in a
+                                            :class:`~torch_geometric.data.Data` or
+                                            :class:`~torch_geometric.data.HeteroData` object
+                                            and returns a boolean value, indicating whether the data
+                                            object should be included in the final dataset.
+                                            (default: :obj:`None`)
+
+        warn (bool):                        TODO: unused argument ? (only used in CSVDataset ABC).
+
+        multithread (bool):                 Whether to use parallel behavior to process data faster.
+                                            Defaults to True.
+
+        verbose (bool):                     Whether to print the number of loaded structures and show
+                                            processing advancement as a progress bar. Defaults to True.
+    """
     def __init__(
         self,
         root: str,
@@ -46,5 +76,5 @@ class MP(CIFDataset):
         self.process_cif(
             raw_file,
             processed_file,
-            loading_description=f"proprocess MP",
+            loading_description=f"preprocess MP",
         )
