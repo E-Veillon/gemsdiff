@@ -1,3 +1,4 @@
+"""TODO: Module description."""
 import torch
 import matplotlib.pyplot as plt
 from ase.visualize.plot import plot_atoms
@@ -7,7 +8,25 @@ from ase.geometry import cell_to_cellpar
 
 import os
 
-def save_snapshot(batch, model, filename, n=(6, 2), figsize=(30, 30),noise_pos=0.05):
+def save_snapshot(
+    batch, model, filename, n: tuple[int, int] = (6, 2), figsize: tuple[int, int] = (30, 30), noise_pos: int = 0.05
+) -> None:
+    """
+    TODO: function description.
+
+    Parameters:
+        batch (TODO):       TODO.
+
+        model (TODO):       TODO.
+
+        filename (TODO):    TODO.
+
+        n ((int, int)):     TODO. Defaults to (6, 2).
+
+        figsize ((int, int)):   TODO. Defaults to (30, 30).
+
+        noise_pos (int):        TODO. Defaults to 0.05.
+    """
     x_thild = (batch.pos + noise_pos * torch.randn_like(batch.pos)) % 1.0
     batch.x_thild = x_thild
     eye = torch.eye(3, device=batch.pos.device).unsqueeze(0).repeat(batch.cell.shape[0], 1, 1)

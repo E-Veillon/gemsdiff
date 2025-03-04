@@ -1,3 +1,4 @@
+"""A class to conveniently and efficiently switch between lattices 3x3 matrix and parameters, and normalize said parameters."""
 import torch
 import torch.nn as nn
 
@@ -11,8 +12,21 @@ from typing import Tuple
 
 
 class LatticeScaler(nn.Module):
+    """
+    A class to conveniently and efficiently switch between lattices 3x3 matrix and parameters,
+    and normalize said parameters.
+
+    Attributes:
+        mean (torch.nn.Parameter):  1-D tensor of shape (6,) filled with zeros for
+                                    the centered-reduced normal distribution mean.
+                                    Used for lattices parameters normalization.
+
+        std (torch.nn.Parameter):   1-D tensor of shape (6,) filled with ones for
+                                    the centered-reduced normal distribution standard
+                                    deviation. Used for lattices parameters normalization.
+    """
     def __init__(self):
-        super(LatticeScaler, self).__init__()
+        super().__init__()
 
         self.mean = nn.Parameter(
             torch.zeros(6, dtype=torch.float32), requires_grad=False
@@ -73,7 +87,7 @@ class LatticeScaler(nn.Module):
 
         if verbose:
             iterator = tqdm.tqdm(
-                dataloader, desc="calculating normalization paremeters"
+                dataloader, desc="calculating normalization parameters"
             )
         else:
             iterator = dataloader

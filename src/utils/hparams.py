@@ -1,3 +1,4 @@
+"""A dataclass to handle hyperparameters values for the model."""
 from dataclasses import dataclass
 import json
 from typing import Tuple
@@ -6,6 +7,32 @@ import copy
 
 @dataclass
 class Hparams:
+    """
+    A dataclass to handle hyperparameters values for the model.
+    
+    Parameters:
+        batch_size (int):           Number of data objects in each batch. Defaults to 1024.
+
+        epochs (int):               Number of train-validation loops. Defaults to 128.
+
+        lr (float):                 The model learning rate, i.e. the sensibility of weights
+                                    updates during train loop. Defaults to 0.001.
+
+        beta1 (float):              TODO. Defaults to 0.9.
+
+        grad_clipping (float):      TODO. Defaults to 1.0.
+
+        knn (int):                  Number k of nearest neighbors to take in account for
+                                    message aggregation. Defaults to 32.
+
+        features (int):             TODO. Defaults to 256.
+
+        layers (int):               TODO. Defaults to 3.
+
+        diffusion_steps (int):      TODO. Defaults to 100.
+
+        x_betas ((float, float)):   TODO. Defaults to (1e-6, 2e-3).
+    """
     batch_size: int = 1024
     epochs: int = 128
 

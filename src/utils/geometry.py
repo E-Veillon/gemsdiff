@@ -1,3 +1,4 @@
+"""A class to handle a dataset of structures graphs."""
 import torch
 import torch.nn.functional as F
 
@@ -10,6 +11,9 @@ import crystallographic_graph
 
 @dataclass(init=False)
 class Geometry:
+    """
+    Handle a dataset of structures graphs.
+    """
     batch: torch.LongTensor
     batch_edges: torch.LongTensor
     batch_triplets: torch.LongTensor
@@ -61,6 +65,36 @@ class Geometry:
         edges_idx: torch.LongTensor = None,
         edges_attr: torch.LongTensor = None,
     ):
+        """
+        Handle a dataset of structures graphs.
+
+        Parameters:
+            cell (torch.FloatTensor):       Tensor concatenating structures unit cell parameters.
+
+            num_atoms (torch.LongTensor):   1-D Tensor concatenating structures number of atoms.
+
+            x (torch.FloatTensor):          Tensor concatenating structures atomic positions.
+
+            mask (torch.BoolTensor):        TODO (unused argument ?). If not given, TODO: default behavior.
+
+            knn (int):                      TODO. Defaults to 0.
+
+            cutoff (float):                 TODO. Defaults to 0.
+
+            check_tensor (bool):            TODO. Defaults to True.
+
+            edges (bool):                   TODO. Defults to True.
+
+            triplets (bool):                TODO. Defaults to True.
+
+            symetric (bool):                TODO. Defaults to False.
+
+            compute_reverse_idx (bool):     TODO. Defaults to False.
+
+            edges_idx (torch.LongTensor):   TODO. If not given, TODO: default behavior.
+
+            edges_attr (torch.LongTensor):  TODO. If not given, TODO: default behavior.
+        """
         assert knn > 0 or cutoff > 0 or (edges_idx is not None)
 
         if check_tensor:

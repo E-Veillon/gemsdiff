@@ -1,9 +1,20 @@
+"""An assertion class to check tensors shapes compatibility before applying operations on them."""
 import torch
 from typing import Tuple, List, Union, Dict
 from collections import namedtuple
 
 
+ShapesTuple = namedtuple("shapes", tuple())
+
 class shape:
+    """
+    An assertion class to check tensors shapes compatibility before applying operations on them.
+    
+    parameters:
+        *dim (int|str):                 tensors dimensions to check.
+
+        dtype (torch.dtype, optional):  datatype checked tensors must match with.
+    """
     def __init__(self, *dim: Union[int, str], dtype=None):
         assert isinstance(dim, tuple)
 
@@ -56,13 +67,13 @@ class shape:
         return context
 
 
-def build_shapes(context: Dict[str, int]) -> namedtuple("shapes", tuple()):
+def build_shapes(context: Dict[str, int]) -> ShapesTuple:
     return namedtuple("shapes", context.keys())(*context.values())
 
 
 def assert_tensor_match(
     *args: Tuple[torch.Tensor, shape]
-) -> namedtuple("shapes", tuple()):
+) -> ShapesTuple:
     context = {}
     for x, s in args:
         context = s.assert_match(x, context=context)

@@ -1,13 +1,22 @@
+"""Functions to compute metrics for the model evaluation."""
 import torch
 from torch_scatter import scatter_mean
 import tqdm
 
-from typing import Dict, Tuple
+from itertools import product
 
 from src.utils.scaler import LatticeScaler
 
 
-def push(history: Dict[str, torch.Tensor], **kwargs):
+def push(history: dict[str, torch.Tensor], **kwargs):
+    """
+    TODO: function description.
+    
+    Parameters:
+        history (dict): Dict of the form {str, torch.Tensor} TODO.
+
+        **kwargs:       TODO.
+    """
     for key, value in kwargs.items():
         if isinstance(value, torch.Tensor):
             if value.ndim == 0:
@@ -39,37 +48,25 @@ def get_metric_pos(
     num_atoms: torch.LongTensor,
     by_structure: bool = False,
 ) -> torch.FloatTensor:
-    offset = torch.tensor(
-        [
-            [-1, -1, -1],
-            [-1, -1, 0],
-            [-1, -1, 1],
-            [-1, 0, -1],
-            [-1, 0, 0],
-            [-1, 0, 1],
-            [-1, 1, -1],
-            [-1, 1, 0],
-            [-1, 1, 1],
-            [0, -1, -1],
-            [0, -1, 0],
-            [0, -1, 1],
-            [0, 0, -1],
-            [0, 0, 0],
-            [0, 0, 1],
-            [0, 1, -1],
-            [0, 1, 0],
-            [0, 1, 1],
-            [1, -1, -1],
-            [1, -1, 0],
-            [1, -1, 1],
-            [1, 0, -1],
-            [1, 0, 0],
-            [1, 0, 1],
-            [1, 1, -1],
-            [1, 1, 0],
-            [1, 1, 1],
-        ]
-    )
+    """
+    Compute the metric evaluating atoms trajectories during reverse diffusion step.
+    
+    Parameters:
+        rho (torch.FloatTensor):        TODO.
+
+        x (torch.FloatTensor):          TODO.
+
+        x_prime (torch.FloatTensor):    TODO.
+
+        num_atoms (torch.LongTensor):   TODO.
+
+        by_structure (bool):            TODO. Defaults to False.
+
+    Returns:
+        torch.FloatTensor: TODO.
+    """
+    # represents the possible shifts to neighbors unit cells
+    offset = torch.tensor(list(product((-1, 0, 1), repeat=3)), dtype=torch.float32)
 
     struct_idx = torch.arange(rho.shape[0], device=rho.device)
     batch = struct_idx.repeat_interleave(num_atoms)
@@ -99,9 +96,20 @@ def get_metric_pos(
 
 @torch.no_grad()
 def get_metrics(
-    history: Dict[str, torch.Tensor],
+    history: dict[str, torch.Tensor],
     by_structure: bool = False,
-) -> Dict[str, torch.FloatTensor]:
+) -> dict[str, torch.FloatTensor]:
+    """
+    TODO: function description.
+    
+    Parameters:
+        history (dict):         Dict of the form {str: torch.Tensor} TODO.
+
+        by_structure (bool):    TODO. Defaults to False.
+
+    Returns:
+        dict: metrics values in a dict of the form {str: torch.FloatTensor}.
+    """
     rho = history["rho"].cpu()
     rho_prime = history["rho_pred"].cpu()
     x = history["x"].cpu() % 1.0
@@ -113,6 +121,8 @@ def get_metrics(
     pos_mae_diff = get_metric_pos(rho, x, x_t, num_atoms, by_structure=by_structure)
 
     rho_lengths, rho_angles = LatticeScaler.get_lattices_parameters(rho)
+    #TODO (E. Veillon, 04/03/2025): when rho_prime is None, mae_lengths and mae_angles are not defined
+    # => Will raise unhandled UndefinedError.
     if rho_prime is not None:
         rho_prime_lengths, rho_prime_angles = rho_prime
 
@@ -137,6 +147,21 @@ def get_metrics(
 
 @torch.no_grad()
 def compute_metrics(model, dataloader, desc_bar, device):
+    """
+    TODO: function description.
+
+    Parameters:
+        model (TODO):       TODO.
+
+        dataloader (TODO):  TODO.
+
+        desc_bar (TODO):    TODO.
+
+        device (TODO):      TODO.
+
+    Returns:
+        dict: metrics values in a dict of the form {str: torch.FloatTensor}.
+    """
     history = {}
 
     step = model.diffusion_steps // 32
