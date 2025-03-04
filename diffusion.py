@@ -23,21 +23,60 @@ from src.utils.video import make_video
 from src.utils.cif import make_cif
 
 
-def get_dataloader(path: str, dataset: str, batch_size: int):
+def get_dataloader(path: str, dataset: str, batch_size: int, _old: bool = True):
+    """
+    Load and split dataset into training, validation and test DataLoaders.
+
+    Parameters:
+        path (str):         Path to directory containing the dataset file.
+
+        dataset (str):      Name of the dataset to use. Supports "mp" and "oqmd".
+
+        batch_size (int):   Number of data to put in each DataLoader batch.
+
+        _old (bool):        Dev flag to switch easily between two different
+                            implementations of this function.
+    
+    Returns:
+        tuple[DataLoader, DataLoader, DataLoader]: Train, Validation and Test DataLoaders.
+    """
     assert dataset in ["mp", "oqmd"]
 
     dataset_path = os.path.join(path, dataset)
-    if dataset == "mp":
-        data = MP(dataset_path)
+    if _old:
+        if dataset == "mp":
+            data = MP(dataset_path)
+            gen = torch.Generator().manual_seed(42)
+            train_set, valid_set, test_set = random_split(
+                data, [78600, 4367, 4367], generator=gen
+            )
+        elif dataset == "oqmd":
+            data = OQMD(dataset_path)
+            gen = torch.Generator().manual_seed(42)
+            train_set, valid_set, test_set = random_split(
+                data, [199686, 11094, 11094], generator=gen
+            )
+    else:
+        data = MP(dataset_path) if dataset == "mp" else OQMD(dataset_path)
+        n_data = len(data)
+        n_train = round(n_data * 0.9)
+        n_valid = n_test = round(n_data * 0.05)
+
+        # Handle rounding error
+        remainder = n_data - (n_train + n_valid + n_test)
+
+        if remainder == 1: # Too much floor rounding
+            n_train += 1
+
+        elif remainder == -1: # Too much ceil rounding
+            n_train -= 1
+
+        assert n_data == n_train + n_valid + n_test
+
+        # Split dataset
         gen = torch.Generator().manual_seed(42)
         train_set, valid_set, test_set = random_split(
-            data, [78600, 4367, 4367], generator=gen
-        )
-    elif dataset == "oqmd":
-        data = OQMD(dataset_path)
-        gen = torch.Generator().manual_seed(42)
-        train_set, valid_set, test_set = random_split(
-            data, [199686, 11094, 11094], generator=gen
+                data, [n_train, n_valid, n_test], generator=gen
         )
 
     loader_train = DataLoader(
@@ -52,6 +91,7 @@ def get_dataloader(path: str, dataset: str, batch_size: int):
 
 
 def add_tensorboard(writer, metrics, path, batch_idx):
+    """Add models metrics for tensorboard plotting."""
     plt.scatter(metrics["t"], metrics["mae_pos_by_t"], label="gnn")
     plt.scatter(metrics["t"], metrics["mae_pos_diff_by_t"], label="no action")
     plt.legend()
